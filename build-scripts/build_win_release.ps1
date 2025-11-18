@@ -94,7 +94,7 @@ Write-Host "[BUILD-WIN] Using python: $pythonExe"
 # 3) Install/upgrade pip, install requirements and pyinstaller
 Write-Host "[BUILD-WIN] Ensuring pip and pyinstaller are installed..."
 & $pythonExe -m pip install --upgrade pip
-& $pythonExe -m pip install -r requirements.txt
+& $pythonExe -m pip install -r req.txt
 & $pythonExe -m pip install pyinstaller
 
 # 4) Run PyInstaller (onedir) - isolate output using dist path
@@ -125,7 +125,8 @@ if (-not (Test-Path (Join-Path $pyDistPath $PyInstallerName))) {
 # 5) Stage PyInstaller output into build\win_python_exe
 Write-Host "[BUILD-WIN] Staging PyInstaller output to $StagingDir"
 New-Item -ItemType Directory -Path $StagingDir -Force | Out-Null
-Copy-Item -Path (Join-Path $pyDistPath $PyInstallerName)\* -Destination $StagingDir -Recurse -Force
+$sourcePath = Join-Path $pyDistPath $PyInstallerName
+Copy-Item -Path "$sourcePath\*" -Destination $StagingDir -Recurse -Force
 
 # 6) Ensure worker exe exists
 $expectedExe = Join-Path $StagingDir "$PyInstallerName.exe"
