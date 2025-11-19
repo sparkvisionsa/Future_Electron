@@ -25,6 +25,12 @@ class AuthCommands {
         });
     }
 
+    async checkStatus() {
+        return this._sendCommand({
+            action: 'check-status'
+        });
+    }
+
     async ping() {
         return this._sendCommand({
             action: 'ping'

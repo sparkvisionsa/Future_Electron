@@ -5,6 +5,7 @@ function registerIpcHandlers() {
     // Auth handlers
     ipcMain.handle('login', authHandlers.handleLogin);
     ipcMain.handle('submit-otp', authHandlers.handleSubmitOtp);
+    ipcMain.handle('check-status', authHandlers.handleCheckStatus);
 
     // Worker handlers
     ipcMain.handle('ping-worker', workerHandlers.handlePing);
@@ -17,6 +18,8 @@ function unregisterIpcHandlers() {
     // Remove all IPC handlers to prevent memory leaks
     ipcMain.removeAllListeners('login');
     ipcMain.removeAllListeners('submit-otp');
+    ipcMain.removeAllListeners('check-status');
+
     ipcMain.removeAllListeners('ping-worker');
     ipcMain.removeAllListeners('worker-status');
 

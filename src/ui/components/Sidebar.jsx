@@ -2,10 +2,8 @@ import React from 'react';
 
 const Sidebar = ({ currentView, onViewChange }) => {
     const menuItems = [
-        { id: 'login', label: '🔐 Authentication', icon: '🔐' },
-        { id: 'dashboard', label: '📊 Dashboard', icon: '📊' },
-        { id: 'automation', label: '⚡ Automation', icon: '⚡' },
-        { id: 'settings', label: '⚙️ Settings', icon: '⚙️' },
+        { id: 'login', label: 'Authentication', icon: '🔐' },
+        { id: 'check-status', label: 'Check Browser', icon: '📊' },
     ];
 
     return (
@@ -24,8 +22,8 @@ const Sidebar = ({ currentView, onViewChange }) => {
                             <button
                                 onClick={() => onViewChange(item.id)}
                                 className={`w-full flex items-center space-x-3 px-4 py-3 rounded-lg transition-all duration-200 ${currentView === item.id
-                                        ? 'bg-blue-600 text-white shadow-lg'
-                                        : 'text-gray-300 hover:bg-gray-800 hover:text-white'
+                                    ? 'bg-blue-600 text-white shadow-lg'
+                                    : 'text-gray-300 hover:bg-gray-800 hover:text-white'
                                     }`}
                             >
                                 <span className="text-lg">{item.icon}</span>

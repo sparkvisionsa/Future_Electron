@@ -49,6 +49,37 @@ async def get_main_tab():
         return b.tabs[0]
     return b.main_tab or await b.get("about:blank")
 
+async def check_browser_status():
+    global browser
+    if browser is None:
+        return {"status": "FAILED", "error": "No browser instance", "browserOpen": False}
+    
+    try:
+        page = browser.main_tab
+        url = await page.evaluate("window.location.href")
+        current_url = url.lower()
+        
+        # URLs that definitively indicate NOT logged in
+        non_logged_in_urls = [
+            "sso.taqeem.gov.sa/realms/rel_taqeem/login-actions/authenticate",
+            "sso.taqeem.gov.sa/realms/rel_taqeem/protocol/openid-connect/auth",
+            "/login-actions/authenticate",
+            "/protocol/openid-connect/auth",
+        ]
+        
+        # If we're on any authentication URL, we're definitely not logged in
+        if any(auth_url in current_url for auth_url in non_logged_in_urls):
+            return {"status": "NOT_LOGGED_IN", "error": "User not logged in", "browserOpen": True}
+            
+        # If browser is responsive and we're NOT on auth URLs, assume logged in
+        return {"status": "SUCCESS", "message": "User is logged in", "browserOpen": True}
+        
+    except Exception as e:
+        # Browser instance exists but is not actually running
+        _browser = None
+        return {"status": "FAILED", "error": str(e), "browserOpen": False}
+
+
 
 async def closeBrowser():
     global browser, page

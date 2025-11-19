@@ -3,7 +3,7 @@ import sys
 import json
 import traceback
 import platform
-from .browser import closeBrowser, get_browser
+from .browser import closeBrowser, get_browser, check_browser_status
 from scripts.loginFlow.login import startLogin, submitOtp
 
 if platform.system().lower() == "windows":
@@ -49,6 +49,12 @@ async def command_handler():
                 page = browser.main_tab
                 result = await submitOtp(page, cmd.get("otp", ""), cmd.get("recordId"))
                 result["commandId"] = cmd.get("commandId")
+                print(json.dumps(result), flush=True)
+
+            elif action == "check-status":
+                result = await check_browser_status()
+                result["commandId"] = cmd.get("commandId")
+                
                 print(json.dumps(result), flush=True)
                 
             elif action == "close":

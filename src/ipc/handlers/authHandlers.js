@@ -35,7 +35,37 @@ const authHandlers = {
             console.error('[MAIN] OTP error:', error);
             return { status: 'ERROR', error: error.message };
         }
+    },
+
+    async handleCheckStatus(event) {
+        let result;
+        try {
+            console.log('[MAIN] Received check status request');
+
+            result = await pythonAPI.auth.checkStatus();
+            if (!result) return { status: 'ERROR', error: 'Browser status check failed' };
+
+            console.log("Result at handler:", result);
+
+            // Make sure all properties are passed through
+            return {
+                status: result.status,
+                browserOpen: result.browserOpen,
+                message: result.message,
+                error: result.error
+            };
+
+        } catch (error) {
+            console.error('[MAIN] Check status error:', error);
+            return {
+                status: 'ERROR',
+                error: error.message,
+                browserOpen: result?.browserOpen || false,
+                message: result?.message || 'Status check failed'
+            };
+        }
     }
+
 };
 
 module.exports = authHandlers;
