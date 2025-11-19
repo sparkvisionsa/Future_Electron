@@ -1,7 +1,8 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const pythonWorker = require('./services/PythonWorkerService');
+const { registerIpcHandlers, unregisterIpcHandlers } = require('./ipc');
+const pythonAPI = require('./services/python/PythonAPI');
 
 let mainWindow;
 
@@ -63,50 +64,23 @@ function createWindow() {
     });
 }
 
-// ... ipcMain handlers and app event listeners remain unchanged
-
-
-ipcMain.handle('login', async (event, credentials) => {
-    try {
-        console.log('[MAIN] Received login request:', credentials.email);
-
-        const result = await pythonWorker.login(credentials.email, credentials.password);
-
-        if (result.status === 'OTP_REQUIRED') {
-            return { status: 'OTP_REQUIRED', message: 'Please enter OTP' };
-        } else if (result.status === 'SUCCESS') {
-            return { status: 'SUCCESS', message: 'Login successful' };
-        } else {
-            return { status: 'ERROR', error: result.error || 'Login failed' };
-        }
-    } catch (error) {
-        console.error('[MAIN] Login error:', error);
-        return { status: 'ERROR', error: error.message };
-    }
-});
-
-// Handle OTP from React
-ipcMain.handle('submit-otp', async (event, otp) => {
-    try {
-        console.log('[MAIN] Received OTP:', otp);
-
-        const result = await pythonWorker.submitOtp(otp);
-
-        if (result.status === 'SUCCESS') {
-            return { status: 'SUCCESS', message: 'Authentication complete' };
-        } else {
-            return { status: 'ERROR', error: result.error || 'OTP verification failed' };
-        }
-    } catch (error) {
-        console.error('[MAIN] OTP error:', error);
-        return { status: 'ERROR', error: error.message };
-    }
-});
-
 // Electron app event handlers
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+    createWindow();
+    registerIpcHandlers(); // Register all IPC handlers
+});
 
-app.on('window-all-closed', () => {
+app.on('window-all-closed', async () => {
+    // Close Python worker gracefully when app is quitting
+    try {
+        await pythonAPI.closeWorker();
+    } catch (error) {
+        console.error('[MAIN] Error closing worker:', error);
+    }
+
+    // Unregister IPC handlers to prevent memory leaks
+    unregisterIpcHandlers();
+
     // On macOS, keep app running even when all windows are closed
     if (process.platform !== 'darwin') {
         app.quit();
@@ -117,6 +91,7 @@ app.on('activate', () => {
     // On macOS, re-create window when dock icon is clicked
     if (BrowserWindow.getAllWindows().length === 0) {
         createWindow();
+        registerIpcHandlers(); // Re-register handlers for new window
     }
 });
 

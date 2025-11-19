@@ -3,8 +3,8 @@ import sys
 import json
 import traceback
 import platform
-from browser import closeBrowser, get_browser
-from login import startLogin, submitOtp
+from .browser import closeBrowser, get_browser
+from scripts.loginFlow.login import startLogin, submitOtp
 
 if platform.system().lower() == "windows":
     sys.stdout.reconfigure(encoding="utf-8")

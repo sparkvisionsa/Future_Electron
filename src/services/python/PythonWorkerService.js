@@ -1,4 +1,3 @@
-// src/services/PythonWorkerService.js
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -16,8 +15,9 @@ class PythonWorkerService {
         this.startupTimeout = 10000;
     }
 
+
     getPythonExecutable() {
-        const projectRoot = path.join(__dirname, '../..');
+        const projectRoot = path.join(__dirname, '../../../');
 
         // DEV MODE: prefer venv from project root
         if (!app.isPackaged) {
@@ -79,7 +79,6 @@ class PythonWorkerService {
         return { type: 'python', path: 'python3' };
     }
 
-
     _normalizeSpawnPath(spawnPath, cwd) {
         try {
             if (!fs.existsSync(spawnPath)) return { spawnPath, cwd };
@@ -126,10 +125,6 @@ class PythonWorkerService {
         return { spawnPath, cwd };
     }
 
-    /**
-     * Start the worker. Returns a Promise that resolves with the worker process
-     * or rejects with an error if worker could not be started.
-     */
     async startWorker() {
         // If worker already running, return it
         if (this.worker && !this.worker.killed) {
@@ -146,12 +141,22 @@ class PythonWorkerService {
             spawnPath = execInfo.path;
             cwd = path.dirname(spawnPath);
             console.log(`[PY] Using bundled worker: ${spawnPath}`);
+            // In the startWorker method, update this section:
         } else {
             spawnPath = execInfo.path;
-            const scriptPath = path.join(__dirname, '../scripts/worker.py');
-            args = [scriptPath];
-            cwd = path.dirname(scriptPath);
-            console.log(`[PY] Using python interpreter: ${spawnPath} ${scriptPath}`);
+            // Run as module instead of direct file execution
+            args = ['-m', 'scripts.core.worker'];
+            // Set CWD to the project root (where src directory is)
+            cwd = path.join(__dirname, '../..'); // This should point to the directory containing 'src'
+            console.log(`[PY] Using python module: ${spawnPath} -m scripts.core.worker`);
+            console.log(`[PY] Working directory: ${cwd}`);
+
+            // Verify the directory structure exists
+            const scriptsPath = path.join(cwd, 'src', 'scripts');
+            console.log(`[PY] Scripts path exists: ${fs.existsSync(scriptsPath)}`);
+            if (fs.existsSync(scriptsPath)) {
+                console.log(`[PY] Scripts directory contents: ${fs.readdirSync(scriptsPath)}`);
+            }
         }
 
         console.log(`[PY] Starting worker: ${spawnPath} ${args.join(' ')}`);
@@ -286,11 +291,10 @@ class PythonWorkerService {
         }
     }
 
-    // internal helper to reuse previous normalize logic but avoid naming conflicts
     _differentiateAndNormalize(spawnPath, cwd) {
-        // reuse existing _normalizeSpawnPath logic but adapt name
         return this._normalizeSpawnPath(spawnPath, cwd);
     }
+
 
     handleWorkerOutput(line) {
         try {
@@ -315,6 +319,7 @@ class PythonWorkerService {
             console.error('[PY] Failed to parse worker output:', line, error);
         }
     }
+
 
     async sendCommand(command) {
         // Ensure worker is started (awaiting startWorker). startWorker returns or throws.
@@ -350,26 +355,6 @@ class PythonWorkerService {
         });
     }
 
-    async login(email, password) {
-        return this.sendCommand({
-            action: 'login',
-            email,
-            password
-        });
-    }
-
-    async submitOtp(otp) {
-        return this.sendCommand({
-            action: 'otp',
-            otp
-        });
-    }
-
-    async ping() {
-        return this.sendCommand({
-            action: 'ping'
-        });
-    }
 
     async closeWorker() {
         if (!this.worker) return;
@@ -387,10 +372,10 @@ class PythonWorkerService {
         }
     }
 
+
     isReady() {
         return this.isWorkerReady && this.worker && !this.worker.killed;
     }
 }
 
-const pythonWorker = new PythonWorkerService();
-module.exports = pythonWorker;
+module.exports = PythonWorkerService;

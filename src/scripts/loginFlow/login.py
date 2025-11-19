@@ -1,8 +1,9 @@
 import asyncio
 import json
 import traceback
-from browser import closeBrowser, wait_for_element, set_page, get_page
-from navigation import post_login_navigation
+from scripts.core.browser import closeBrowser
+from scripts.core.utils import wait_for_element
+from .navigation import post_login_navigation
 
 async def startLogin(page, email, password, record_id=None):
     try:

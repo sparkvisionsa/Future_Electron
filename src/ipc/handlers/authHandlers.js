@@ -1,0 +1,41 @@
+const pythonAPI = require('../../services/python/PythonAPI');
+
+const authHandlers = {
+    async handleLogin(event, credentials) {
+        try {
+            console.log('[MAIN] Received login request:', credentials.email);
+
+            const result = await pythonAPI.auth.login(credentials.email, credentials.password);
+
+            if (result.status === 'OTP_REQUIRED') {
+                return { status: 'OTP_REQUIRED', message: 'Please enter OTP' };
+            } else if (result.status === 'SUCCESS') {
+                return { status: 'SUCCESS', message: 'Login successful' };
+            } else {
+                return { status: 'ERROR', error: result.error || 'Login failed' };
+            }
+        } catch (error) {
+            console.error('[MAIN] Login error:', error);
+            return { status: 'ERROR', error: error.message };
+        }
+    },
+
+    async handleSubmitOtp(event, otp) {
+        try {
+            console.log('[MAIN] Received OTP:', otp);
+
+            const result = await pythonAPI.auth.submitOtp(otp);
+
+            if (result.status === 'SUCCESS') {
+                return { status: 'SUCCESS', message: 'Authentication complete' };
+            } else {
+                return { status: 'ERROR', error: result.error || 'OTP verification failed' };
+            }
+        } catch (error) {
+            console.error('[MAIN] OTP error:', error);
+            return { status: 'ERROR', error: error.message };
+        }
+    }
+};
+
+module.exports = authHandlers;

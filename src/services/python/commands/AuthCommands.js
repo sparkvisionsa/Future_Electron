@@ -1,0 +1,35 @@
+class AuthCommands {
+    constructor(workerService) {
+        if (!workerService) {
+            throw new Error('WorkerService is required');
+        }
+        this.worker = workerService;
+    }
+
+    async _sendCommand(command) {
+        return await this.worker.sendCommand(command);
+    }
+
+    async login(email, password) {
+        return this._sendCommand({
+            action: 'login',
+            email,
+            password
+        });
+    }
+
+    async submitOtp(otp) {
+        return this._sendCommand({
+            action: 'otp',
+            otp
+        });
+    }
+
+    async ping() {
+        return this._sendCommand({
+            action: 'ping'
+        });
+    }
+}
+
+module.exports = AuthCommands;
