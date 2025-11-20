@@ -1,5 +1,5 @@
 const { ipcMain } = require('electron');
-const { authHandlers, reportHandlers, workerHandlers } = require('./handlers');
+const { authHandlers, reportHandlers, workerHandlers, healthHandlers } = require('./handlers');
 
 function registerIpcHandlers() {
     // Auth handlers
@@ -14,6 +14,9 @@ function registerIpcHandlers() {
     ipcMain.handle('ping-worker', workerHandlers.handlePing);
     ipcMain.handle('worker-status', workerHandlers.handleWorkerStatus);
 
+    //Health handlers
+    ipcMain.handle('check-server-health', healthHandlers.handleHealth);
+
     console.log('[IPC] All handlers registered');
 }
 
@@ -27,6 +30,8 @@ function unregisterIpcHandlers() {
     ipcMain.removeAllListeners('worker-status');
 
     ipcMain.removeAllListeners('validate-report');
+
+    ipcMain.removeAllListeners('check-server-health');
 
     console.log('[IPC] All handlers unregistered');
 }

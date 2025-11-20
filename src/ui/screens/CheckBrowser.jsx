@@ -8,11 +8,34 @@ const CheckBrowser = () => {
         isOpen: null,
         message: "Check browser status"
     });
+    const [healthStatus, setHealthStatus] = useState(null);
+    const [isCheckingHealth, setIsCheckingHealth] = useState(false);
+
 
     // Mock API functions that will call Electron's exposed API
     const checkBrowserStatus = async () => {
         return await window.electronAPI.checkStatus();
     };
+
+    const checkHealth = async () => {
+        setIsCheckingHealth(true);
+        setHealthStatus({ message: "Checking server health..." });
+
+        try {
+            const result = await window.electronAPI.checkHealth();   // 👈 NEW CALL
+            console.log("Health result:", result);
+
+            setHealthStatus(result);
+        } catch (err) {
+            setHealthStatus({
+                ok: false,
+                error: err.message || "Unknown error"
+            });
+        }
+
+        setIsCheckingHealth(false);
+    };
+
 
     const handleCheckBrowser = async () => {
         setIsChecking(true);
@@ -176,6 +199,35 @@ const CheckBrowser = () => {
                                 {isChecking ? "Checking..." : "Check Status"}
                             </button>
                         </div>
+                        <div className="flex justify-center mb-4">
+                            <button
+                                onClick={checkHealth}
+                                className="px-6 py-3 bg-green-600 hover:bg-green-700 text-white rounded-lg font-semibold flex items-center justify-center gap-2 transition-colors"
+                            >
+                                {isCheckingHealth ? (
+                                    <RefreshCw className="w-4 h-4 animate-spin" />
+                                ) : (
+                                    <RefreshCw className="w-4 h-4" />
+                                )}
+                                {isCheckingHealth ? "Checking Server..." : "Check Server Health"}
+                            </button>
+                        </div>
+
+                        {healthStatus && (
+                            <div className="mt-3 text-sm text-center">
+                                {healthStatus.ok ? (
+                                    <span className="text-green-600 font-medium">
+                                        Server OK ✔️
+                                    </span>
+                                ) : (
+                                    <span className="text-red-600 font-medium">
+                                        Server Error: {healthStatus.error || "Unknown"}
+                                    </span>
+                                )}
+                            </div>
+                        )}
+
+
 
                         {/* Additional Info */}
                         <p className="text-xs text-gray-500">

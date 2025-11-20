@@ -116,7 +116,7 @@ const ValidateReport = () => {
                                         />
                                         <button
                                             onClick={handleCheckReport}
-                                            disabled={!reportId.trim() || isCheckingReport}
+                                            disabled={isCheckingReport}
                                             className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded-lg font-semibold flex items-center gap-2 transition-colors"
                                         >
                                             {isCheckingReport ? "Validating..." : "Validate Report"}

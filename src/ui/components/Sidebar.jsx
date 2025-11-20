@@ -5,6 +5,7 @@ const Sidebar = ({ currentView, onViewChange }) => {
         { id: 'login', label: 'Authentication', icon: '🔐' },
         { id: 'check-status', label: 'Check Browser', icon: '📊' },
         { id: 'validate-report', label: 'Validate Report', icon: '🔍' },
+        { id: 'asset-create', label: 'Create Asset', icon: '📁' },
     ];
 
     return (

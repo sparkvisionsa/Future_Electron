@@ -6,6 +6,7 @@ import Layout from './components/Layout';
 import LoginForm from './screens/LoginForm';
 import CheckBrowser from './screens/CheckBrowser';
 import ValidateReport from './screens/ValidateReport';
+import AssetCreate from './screens/AssetCreate';
 
 
 
@@ -22,6 +23,9 @@ const App = () => {
 
             case 'validate-report':
                 return <ValidateReport />;
+
+            case 'asset-create':
+                return <AssetCreate />;
 
             default:
                 return <LoginForm />;
