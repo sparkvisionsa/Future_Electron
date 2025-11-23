@@ -1,4 +1,5 @@
 const pythonAPI = require('../../services/python/PythonAPI');
+const { dialog } = require('electron');
 
 const workerHandlers = {
     async handlePing() {
@@ -17,6 +18,21 @@ const workerHandlers = {
             return { status: 'SUCCESS', isReady };
         } catch (error) {
             console.error('[MAIN] Worker status error:', error);
+            return { status: 'ERROR', error: error.message };
+        }
+    },
+
+    async showOpenDialog() {
+        try {
+            const { cancelled, filePaths } = await dialog.showOpenDialog({
+                properties: ['openFile'],
+                filters: [
+                    { name: 'Excel Files', extensions: ['xlsx', 'xls'] }
+                ]
+            });
+            return { status: 'SUCCESS', filePaths, cancelled };
+        } catch (error) {
+            console.error('[MAIN] Open dialog error:', error);
             return { status: 'ERROR', error: error.message };
         }
     }

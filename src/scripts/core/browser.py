@@ -42,7 +42,6 @@ async def get_browser(force_new=False):
         )
     return browser
 
-
 async def get_main_tab():
     b = await get_browser()
     if b.main_tab is None and len(b.tabs) > 0:
@@ -79,7 +78,23 @@ async def check_browser_status():
         _browser = None
         return {"status": "FAILED", "error": str(e), "browserOpen": False}
 
+async def new_tab(url):
+    global browser
+    if browser:
+        try:
+            new_tab = await browser.get(url, new_tab=True)
+            return new_tab
+        except Exception as e:
+            return {"status": "FAILED", "error": str(e)}
 
+async def new_window(url):
+    global browser
+    if browser:
+        try:
+            new_window = await browser.get(url, new_window=True)
+            return new_window
+        except Exception as e:
+            return {"status": "FAILED", "error": str(e)}    
 
 async def closeBrowser():
     global browser, page
@@ -90,11 +105,9 @@ async def closeBrowser():
             pass
     browser, page = None, None
 
-
 def set_page(new_page):
     global page
     page = new_page
-
 
 def get_page():
     global page

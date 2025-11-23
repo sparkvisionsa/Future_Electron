@@ -7,6 +7,7 @@ import LoginForm from './screens/LoginForm';
 import CheckBrowser from './screens/CheckBrowser';
 import ValidateReport from './screens/ValidateReport';
 import AssetCreate from './screens/AssetCreate';
+import UploadExcel from './screens/UploadExcel';
 
 
 
@@ -26,6 +27,9 @@ const App = () => {
 
             case 'asset-create':
                 return <AssetCreate />;
+
+            case 'upload-excel':
+                return <UploadExcel />;
 
             default:
                 return <LoginForm />;

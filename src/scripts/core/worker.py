@@ -4,6 +4,7 @@ from .browser import closeBrowser, get_browser, check_browser_status
 
 from scripts.loginFlow.login import startLogin, submitOtp
 from scripts.submission.validateReport import validate_report
+from scripts.submission.createMacros import run_create_assets
 
 if platform.system().lower() == "windows":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -61,6 +62,21 @@ async def command_handler():
                 result["commandId"] = cmd.get("commandId")
 
                 print(json.dumps(result), flush=True)
+
+            elif action == "create-macros":
+                browser = await get_browser()
+                
+                report_id = cmd.get("reportId")
+                macro_count = cmd.get("macroCount")
+                tabs_num = cmd.get("tabsNum")
+                batch_size = cmd.get("batchSize")
+
+                result = await run_create_assets(browser, report_id, macro_count, tabs_num, batch_size)
+                result["commandId"] = cmd.get("commandId")
+
+                print(json.dumps(result), flush=True)
+
+                
                 
             elif action == "close":
                 await closeBrowser()

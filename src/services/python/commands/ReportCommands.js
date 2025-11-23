@@ -16,6 +16,16 @@ class ReportCommands {
             reportId
         });
     }
+
+    async createMacros(reportId, macroCount, tabsNum, batchSize) {
+        return this._sendCommand({
+            action: 'create-macros',
+            reportId,
+            macroCount,
+            tabsNum,
+            batchSize
+        });
+    }
 }
 
 module.exports = ReportCommands;

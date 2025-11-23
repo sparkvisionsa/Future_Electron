@@ -9,10 +9,13 @@ function registerIpcHandlers() {
 
     // Report handlers
     ipcMain.handle('validate-report', reportHandlers.handleValidateReport);
+    ipcMain.handle('create-macros', reportHandlers.handleCreateMacros);
+    ipcMain.handle('extract-asset-data', reportHandlers.handleExtractAssetData);
 
     // Worker handlers
     ipcMain.handle('ping-worker', workerHandlers.handlePing);
     ipcMain.handle('worker-status', workerHandlers.handleWorkerStatus);
+    ipcMain.handle('show-open-dialog', workerHandlers.showOpenDialog);
 
     //Health handlers
     ipcMain.handle('check-server-health', healthHandlers.handleHealth);
@@ -28,8 +31,11 @@ function unregisterIpcHandlers() {
 
     ipcMain.removeAllListeners('ping-worker');
     ipcMain.removeAllListeners('worker-status');
+    ipcMain.removeAllListeners('show-open-dialog');
 
     ipcMain.removeAllListeners('validate-report');
+    ipcMain.removeAllListeners('create-macros');
+    ipcMain.removeAllListeners('extract-asset-data');
 
     ipcMain.removeAllListeners('check-server-health');
 

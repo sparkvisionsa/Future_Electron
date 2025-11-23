@@ -2,7 +2,7 @@
 const axios = require('axios');
 
 const httpClient = axios.create({
-  baseURL: 'http://localhost:3000',
+  baseURL: 'http://localhost:3000/api',
   timeout: 5000, // adjust as needed
   headers: {
     'Content-Type': 'application/json'
