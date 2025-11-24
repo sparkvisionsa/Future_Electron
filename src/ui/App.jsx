@@ -8,6 +8,8 @@ import CheckBrowser from './screens/CheckBrowser';
 import ValidateReport from './screens/ValidateReport';
 import AssetCreate from './screens/AssetCreate';
 import UploadExcel from './screens/UploadExcel';
+import AddCommonFields from './screens/AddCommonFields';
+import GrabMacroIds from './screens/GrabMacroIds';
 
 
 
@@ -30,6 +32,12 @@ const App = () => {
 
             case 'upload-excel':
                 return <UploadExcel />;
+
+            case 'common-fields':
+                return <AddCommonFields />;
+
+            case 'grab-macro-ids':
+                return <GrabMacroIds />;
 
             default:
                 return <LoginForm />;

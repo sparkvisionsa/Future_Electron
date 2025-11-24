@@ -5,6 +5,18 @@ const uploadAssetDataToDatabase = async (reportId, reportData) => {
     return await httpClient.post(url, { reportId, reportData });
 };
 
+const reportExistenceCheck = async (reportId) => {
+    const url = `/report/reportExistenceCheck/${reportId}`;
+    return await httpClient.get(url);
+}
+
+const addCommonFields = async (reportId, inspectionDate, region, city) => {
+    const url = '/report/addCommonFields';
+    return await httpClient.put(url, { reportId, inspectionDate, region, city });
+}
+
 module.exports = {
-    uploadAssetDataToDatabase
+    uploadAssetDataToDatabase,
+    reportExistenceCheck,
+    addCommonFields
 };

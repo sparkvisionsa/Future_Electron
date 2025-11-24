@@ -1,4 +1,4 @@
-import time, asyncio
+import time, asyncio, sys
 
 async def wait_for_element(page, selector, timeout=30, check_interval=1):
     start_time = time.time()
@@ -11,6 +11,14 @@ async def wait_for_element(page, selector, timeout=30, check_interval=1):
             pass
         await asyncio.sleep(check_interval)
     return None
+
+async def safe_query_selector_all(page, selector):
+    """Safely query multiple elements without stale element issues"""
+    try:
+        return await page.query_selector_all(selector)
+    except Exception as e:
+        print(f"Error querying {selector}: {e}", file=sys.stderr)
+        return []
 
 async def wait_for_table_rows(page, timeout=100):
     """Wait for table to have valid data rows"""

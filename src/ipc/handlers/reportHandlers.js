@@ -104,7 +104,18 @@ const reportHandlers = {
             console.error('[MAIN] Extract asset data error:', err && err.stack ? err.stack : err);
             return { status: 'FAILED', error: err.message || String(err) };
         }
+    },
+
+    async handleGrabMacroIds(event, reportId, tabsNum) {
+        try {
+            return await pythonAPI.report.grabMacroIds(reportId, tabsNum);
+        } catch (err) {
+            console.error('[MAIN] Grab macro IDs error:', err && err.stack ? err.stack : err);
+            return { status: 'FAILED', error: err.message || String(err) };
+        }
     }
 };
 
 module.exports = reportHandlers;
+
+//1560665

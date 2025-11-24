@@ -26,6 +26,14 @@ class ReportCommands {
             batchSize
         });
     }
+
+    async grabMacroIds(reportId, tabsNum) {
+        return this._sendCommand({
+            action: 'grab-macro-ids',
+            reportId,
+            tabsNum
+        });
+    }
 }
 
 module.exports = ReportCommands;

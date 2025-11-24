@@ -3,8 +3,10 @@ import asyncio, sys, json, traceback, platform
 from .browser import closeBrowser, get_browser, check_browser_status
 
 from scripts.loginFlow.login import startLogin, submitOtp
+
 from scripts.submission.validateReport import validate_report
 from scripts.submission.createMacros import run_create_assets
+from scripts.submission.grabMacroIds import get_all_macro_ids_parallel
 
 if platform.system().lower() == "windows":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -76,7 +78,17 @@ async def command_handler():
 
                 print(json.dumps(result), flush=True)
 
-                
+            elif action == "grab-macro-ids":
+                browser = await get_browser()
+
+                report_id = cmd.get("reportId")
+                tabs_num = cmd.get("tabsNum")
+
+                result = await get_all_macro_ids_parallel(browser, report_id, tabs_num)
+                result["commandId"] = cmd.get("commandId")
+
+                print(json.dumps(result), flush=True)
+
                 
             elif action == "close":
                 await closeBrowser()

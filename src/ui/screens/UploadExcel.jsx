@@ -102,7 +102,6 @@ const UploadExcel = () => {
         if (!data || !Array.isArray(data)) return [];
 
         return data.map(item => {
-            // Create a clean copy of the item
             const processed = { ...item };
 
             // Remove baseData column if it exists
@@ -110,31 +109,31 @@ const UploadExcel = () => {
                 delete processed.baseData;
             }
 
-            // Map fields to match backend field names exactly
+            // Map fields to match backend field names exactly - REMOVE THE '-' DEFAULTS
             const mappedData = {
                 // Basic asset fields
-                'asset_name': processed.asset_name || processed.assetName || processed.asset_name || '-',
-                'asset_usage_id': processed.asset_usage_id || processed.assetUsageId || processed.asset_usage_id || '-',
+                'asset_name': processed.asset_name || processed.assetName,
+                'asset_usage_id': processed.asset_usage_id || processed.assetUsageId,
 
                 // Market approach fields
                 'market_approach': processed.market_approach || processed.marketApproach ||
-                    (processed.approach_type === 'market' ? 'Market' : '-'),
+                    (processed.approach_type === 'market' ? 'Market' : undefined),
                 'market_approach_value': processed.market_approach_value || processed.marketApproachValue ||
-                    (processed.approach_type === 'market' ? processed.final_value || processed.finalValue : null) || '-',
+                    (processed.approach_type === 'market' ? processed.final_value || processed.finalValue : undefined),
 
                 // Cost approach fields  
                 'cost_approach': processed.cost_approach || processed.costApproach ||
-                    (processed.approach_type === 'cost' ? 'Cost' : '-'),
+                    (processed.approach_type === 'cost' ? 'Cost' : undefined),
                 'cost_approach_value': processed.cost_approach_value || processed.costApproachValue ||
                     processed.cost_value || processed.costValue ||
-                    (processed.approach_type === 'cost' ? processed.final_value || processed.finalValue : null) || '-',
+                    (processed.approach_type === 'cost' ? processed.final_value || processed.finalValue : undefined),
 
                 // Location fields
-                'region': processed.region || processed.Region || processed.location_region || '-',
-                'city': processed.city || processed.City || processed.location_city || '-',
+                'region': processed.region || processed.Region || processed.location_region,
+                'city': processed.city || processed.City || processed.location_city,
 
                 // Date field
-                'inspection_date': processed.inspection_date || processed.inspectionDate || processed.date || '-',
+                'inspection_date': processed.inspection_date || processed.inspectionDate || processed.date,
 
                 // Additional fields that might be needed for backend
                 'asset_type': processed.asset_type || processed.assetType || '0',
@@ -143,8 +142,15 @@ const UploadExcel = () => {
                 'product_type': processed.product_type || processed.productType || '0',
                 'country': processed.country || processed.Country || 'المملكة العربية السعودية',
                 'submitState': processed.submitState || 0,
-                'final_value': processed.final_value || processed.finalValue || null
+                'final_value': processed.final_value || processed.finalValue
             };
+
+            // Remove any undefined values to prevent storing them
+            Object.keys(mappedData).forEach(key => {
+                if (mappedData[key] === undefined || mappedData[key] === null) {
+                    delete mappedData[key];
+                }
+            });
 
             return mappedData;
         });

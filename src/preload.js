@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     validateReport: (reportId) => safeInvoke('validate-report', reportId),
     createMacros: (reportId, macroCount, tabsNum, batchSize) => safeInvoke('create-macros', reportId, macroCount, tabsNum, batchSize),
     extractAssetData: (excelFilePath) => safeInvoke('extract-asset-data', excelFilePath),
+    grabMacroIds: (reportId, tabsNum) => safeInvoke('grab-macro-ids', reportId, tabsNum),
 
     // Worker
     showOpenDialog: () => safeInvoke('show-open-dialog'),
