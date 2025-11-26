@@ -19,8 +19,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
     extractAssetData: (excelFilePath) => safeInvoke('extract-asset-data', excelFilePath),
     grabMacroIds: (reportId, tabsNum) => safeInvoke('grab-macro-ids', reportId, tabsNum),
     macroFill: (reportId, tabsNum) => safeInvoke('macro-fill', reportId, tabsNum),
+
+    // Pause/Resume/Stop controls
+    pauseMacroFill: (reportId) => safeInvoke('pause-macro-fill', reportId),
+    resumeMacroFill: (reportId) => safeInvoke('resume-macro-fill', reportId),
+    stopMacroFill: (reportId) => safeInvoke('stop-macro-fill', reportId),
+
     fullCheck: (reportId, tabsNum) => safeInvoke('full-check', reportId, tabsNum),
     halfCheck: (reportId, tabsNum) => safeInvoke('half-check', reportId, tabsNum),
+
+    // Progress listener for macro fill
+    onMacroFillProgress: (callback) => {
+        const subscription = (event, data) => callback(data);
+        ipcRenderer.on('macro-fill-progress', subscription);
+
+        // Return cleanup function
+        return () => {
+            ipcRenderer.removeListener('macro-fill-progress', subscription);
+        };
+    },
 
     // Worker
     showOpenDialog: () => safeInvoke('show-open-dialog'),

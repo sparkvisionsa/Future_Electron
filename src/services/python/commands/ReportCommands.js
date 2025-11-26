@@ -43,6 +43,27 @@ class ReportCommands {
         });
     }
 
+    async pauseMacroFill(reportId) {
+        return this._sendCommand({
+            action: 'pause-macro-edit',
+            reportId
+        });
+    }
+
+    async resumeMacroFill(reportId) {
+        return this._sendCommand({
+            action: 'resume-macro-edit',
+            reportId
+        });
+    }
+
+    async stopMacroFill(reportId) {
+        return this._sendCommand({
+            action: 'stop-macro-edit',
+            reportId
+        });
+    }
+
     async fullCheck(reportId, tabsNum) {
         return this._sendCommand({
             action: 'full-check',

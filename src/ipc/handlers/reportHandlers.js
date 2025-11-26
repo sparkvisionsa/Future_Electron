@@ -2,6 +2,7 @@ const pythonAPI = require('../../services/python/PythonAPI');
 const { extractAssetDataFromExcel } = require('../../services/excel/extractAssetDataFromExcel');
 const path = require('path');
 const fs = require('fs');
+const { BrowserWindow } = require('electron');
 
 const reportHandlers = {
     async handleValidateReport(event, reportId) {
@@ -61,7 +62,6 @@ const reportHandlers = {
 
             let excelFilePath = null;
 
-            // Normalize if the renderer accidentally passed the whole dialog result
             if (!excelFilePathOrDialogResult) {
                 throw new Error('No file path provided to extract-asset-data');
             }
@@ -71,7 +71,6 @@ const reportHandlers = {
             } else if (Array.isArray(excelFilePathOrDialogResult) && excelFilePathOrDialogResult.length > 0) {
                 excelFilePath = excelFilePathOrDialogResult[0];
             } else if (typeof excelFilePathOrDialogResult === 'object') {
-                // Accept shapes like { status: 'SUCCESS', filePaths: [...], cancelled: false }
                 if (Array.isArray(excelFilePathOrDialogResult.filePaths) && excelFilePathOrDialogResult.filePaths.length > 0) {
                     excelFilePath = excelFilePathOrDialogResult.filePaths[0];
                 } else if (typeof excelFilePathOrDialogResult.path === 'string') {
@@ -85,17 +84,13 @@ const reportHandlers = {
                 throw new Error('Could not determine excel file path from the provided argument.');
             }
 
-            // Optional: ensure file exists
             if (!fs.existsSync(excelFilePath)) {
                 throw new Error(`Excel file not found: ${excelFilePath}`);
             }
 
-            // Call your extractor. Ensure the extractor is exported correctly.
-            // Pass options (e.g. { cleanup: false } for preview so original file isn't deleted).
             const result = await extractAssetDataFromExcel(excelFilePath, options);
 
-            // Return the extractor's result object (normalized).
-            return result; // e.g. { status: "SUCCESS", data: [...], info: {...} }
+            return result;
         } catch (err) {
             console.error('[MAIN] Extract asset data error:', err && err.stack ? err.stack : err);
             return { status: 'FAILED', error: err.message || String(err) };
@@ -113,9 +108,65 @@ const reportHandlers = {
 
     async handleMacroFill(event, reportId, tabsNum) {
         try {
-            return await pythonAPI.report.macroFill(reportId, tabsNum);
+            // Get the window that sent the event
+            const senderWindow = BrowserWindow.fromWebContents(event.sender);
+
+            // Register progress callback
+            pythonAPI.workerService.registerProgressCallback(reportId, (progressData) => {
+                console.log('[MAIN] Progress update:', progressData);
+                // Send progress to renderer
+                if (senderWindow && !senderWindow.isDestroyed()) {
+                    senderWindow.webContents.send('macro-fill-progress', progressData);
+                }
+            });
+
+            // Execute macro fill
+            const result = await pythonAPI.report.macroFill(reportId, tabsNum);
+
+            // Unregister progress callback
+            pythonAPI.workerService.unregisterProgressCallback(reportId);
+
+            return result;
         } catch (err) {
             console.error('[MAIN] Macro fill error:', err && err.stack ? err.stack : err);
+            // Unregister on error
+            pythonAPI.workerService.unregisterProgressCallback(reportId);
+            return { status: 'FAILED', error: err.message || String(err) };
+        }
+    },
+
+    async handlePauseMacroFill(event, reportId) {
+        try {
+            console.log('[MAIN] Received pause macro fill request:', reportId);
+            const result = await pythonAPI.report.pauseMacroFill(reportId);
+            console.log('[MAIN] Pause result:', result);
+            return result;
+        } catch (err) {
+            console.error('[MAIN] Pause macro fill error:', err && err.stack ? err.stack : err);
+            return { status: 'FAILED', error: err.message || String(err) };
+        }
+    },
+
+    async handleResumeMacroFill(event, reportId) {
+        try {
+            console.log('[MAIN] Received resume macro fill request:', reportId);
+            const result = await pythonAPI.report.resumeMacroFill(reportId);
+            console.log('[MAIN] Resume result:', result);
+            return result;
+        } catch (err) {
+            console.error('[MAIN] Resume macro fill error:', err && err.stack ? err.stack : err);
+            return { status: 'FAILED', error: err.message || String(err) };
+        }
+    },
+
+    async handleStopMacroFill(event, reportId) {
+        try {
+            console.log('[MAIN] Received stop macro fill request:', reportId);
+            const result = await pythonAPI.report.stopMacroFill(reportId);
+            console.log('[MAIN] Stop result:', result);
+            return result;
+        } catch (err) {
+            console.error('[MAIN] Stop macro fill error:', err && err.stack ? err.stack : err);
             return { status: 'FAILED', error: err.message || String(err) };
         }
     },

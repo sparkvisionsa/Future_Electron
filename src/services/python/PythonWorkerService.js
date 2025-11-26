@@ -1,7 +1,7 @@
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-const { app } = require('electron'); // must be executed in main process
+const { app } = require('electron');
 
 class PythonWorkerService {
     constructor() {
@@ -10,16 +10,23 @@ class PythonWorkerService {
         this.pendingCommands = new Map();
         this.commandId = 0;
         this.isWorkerReady = false;
-
-        // If you want a custom startup timeout (ms)
         this.startupTimeout = 10000;
+        this.progressCallbacks = new Map(); // Store progress callbacks by reportId
     }
 
+    // Register a progress callback for a specific report
+    registerProgressCallback(reportId, callback) {
+        this.progressCallbacks.set(reportId, callback);
+    }
+
+    // Unregister a progress callback
+    unregisterProgressCallback(reportId) {
+        this.progressCallbacks.delete(reportId);
+    }
 
     getPythonExecutable() {
         const projectRoot = path.join(__dirname, '../../../');
 
-        // DEV MODE: prefer venv from project root
         if (!app.isPackaged) {
             if (process.platform === 'win32') {
                 const venvPathWin = path.join(projectRoot, '.venv', 'Scripts', 'python.exe');
@@ -32,41 +39,32 @@ class PythonWorkerService {
             }
         }
 
-        // PACKAGED: look under process.resourcesPath
         try {
             const rp = process.resourcesPath;
-
-            // 1) Look for a single-file executable placed directly in resources/python_exe
             const directExec = path.join(rp, 'python_exe', 'excec_worker');
             if (fs.existsSync(directExec) && fs.statSync(directExec).isFile()) {
                 return { type: 'bundle', path: directExec };
             }
 
-            // 2) Look for the executable inside a one-dir folder (in case we copied folder contents)
             const nestedExec = path.join(rp, 'python_exe', 'excec_worker');
             if (fs.existsSync(nestedExec) && fs.statSync(nestedExec).isFile()) {
                 return { type: 'bundle', path: nestedExec };
             }
 
-            // 3) In some PyInstaller outputs the executable may have no extension or be named differently
             const candidates = fs.existsSync(path.join(rp, 'python_exe'))
                 ? fs.readdirSync(path.join(rp, 'python_exe')).map(f => path.join(rp, 'python_exe', f))
                 : [];
             for (const c of candidates) {
                 try {
                     if (fs.existsSync(c) && fs.statSync(c).isFile()) {
-                        // Heuristic: pick a file that is executable
                         try {
                             fs.accessSync(c, fs.constants.X_OK);
                             return { type: 'bundle', path: c };
-                        } catch (e) {
-                            // not executable, skip
-                        }
+                        } catch (e) { }
                     }
                 } catch (e) { }
             }
 
-            // 4) fallback: if we included a full venv under resources/python
             const embeddedPython = path.join(rp, 'python', 'bin', 'python3');
             if (fs.existsSync(embeddedPython)) {
                 return { type: 'python', path: embeddedPython };
@@ -75,7 +73,6 @@ class PythonWorkerService {
             console.error('[PY] resource detection error', e && e.message);
         }
 
-        // final fallback to system python
         return { type: 'python', path: 'python3' };
     }
 
@@ -126,7 +123,6 @@ class PythonWorkerService {
     }
 
     async startWorker() {
-        // If worker already running, return it
         if (this.worker && !this.worker.killed) {
             console.log('[PY] Worker already running');
             return this.worker;
@@ -141,17 +137,13 @@ class PythonWorkerService {
             spawnPath = execInfo.path;
             cwd = path.dirname(spawnPath);
             console.log(`[PY] Using bundled worker: ${spawnPath}`);
-            // In the startWorker method, update this section:
         } else {
             spawnPath = execInfo.path;
-            // Run as module instead of direct file execution
             args = ['-m', 'scripts.core.worker'];
-            // Set CWD to the project root (where src directory is)
-            cwd = path.join(__dirname, '../..'); // This should point to the directory containing 'src'
+            cwd = path.join(__dirname, '../..');
             console.log(`[PY] Using python module: ${spawnPath} -m scripts.core.worker`);
             console.log(`[PY] Working directory: ${cwd}`);
 
-            // Verify the directory structure exists
             const scriptsPath = path.join(cwd, 'src', 'scripts');
             console.log(`[PY] Scripts path exists: ${fs.existsSync(scriptsPath)}`);
             if (fs.existsSync(scriptsPath)) {
@@ -163,7 +155,6 @@ class PythonWorkerService {
         console.log(`[PY] Spawn path exists: ${fs.existsSync(spawnPath)}`);
         if (cwd) console.log(`[PY] CWD: ${cwd}`);
 
-        // show debug info if path doesn't exist
         if (!fs.existsSync(spawnPath)) {
             console.error('[PY] Worker binary not found at spawnPath:', spawnPath);
             console.error('[PY] process.resourcesPath =', process.resourcesPath);
@@ -174,18 +165,15 @@ class PythonWorkerService {
             }
 
             const err = new Error(`Worker binary not found at path: ${spawnPath}`);
-            // reject any pending commands
             this.pendingCommands.forEach((h) => h.reject(err));
             this.pendingCommands.clear();
             return Promise.reject(err);
         }
 
-        // Normalize if spawnPath is a directory
         const normalized = this._differentiateAndNormalize(spawnPath, cwd);
         spawnPath = normalized.spawnPath;
         cwd = normalized.cwd || cwd;
 
-        // Final check
         if (!fs.existsSync(spawnPath) || !fs.statSync(spawnPath).isFile()) {
             const err = new Error(`Worker binary invalid or not a file: ${spawnPath}`);
             console.error('[PY] ERROR:', err.message);
@@ -194,14 +182,12 @@ class PythonWorkerService {
             return Promise.reject(err);
         }
 
-        // Spawn in a try/catch to catch immediate errors thrown by spawn
         try {
             const workerProcess = spawn(spawnPath, args, { stdio: ['pipe', 'pipe', 'pipe'], cwd });
             this.worker = workerProcess;
             this.stdoutBuffer = '';
             this.isWorkerReady = false;
 
-            // Hook up stdout/stderr before resolving
             workerProcess.stdout.on('data', (data) => {
                 this.stdoutBuffer += data.toString();
                 const lines = this.stdoutBuffer.split(/\r?\n/);
@@ -225,14 +211,12 @@ class PythonWorkerService {
                 console.log(`[PY] Worker exited (code=${code}, signal=${signal})`);
                 this.isWorkerReady = false;
                 this.worker = null;
-                // Reject all pending commands
                 this.pendingCommands.forEach((handler) => {
                     handler.reject(new Error(`Worker exited with code ${code}`));
                 });
                 this.pendingCommands.clear();
             });
 
-            // Wait for spawn event or timeout
             return await new Promise((resolve, reject) => {
                 let resolved = false;
 
@@ -244,14 +228,11 @@ class PythonWorkerService {
                     resolve(workerProcess);
                 };
 
-                // If 'spawn' isn't emitted quickly, also resolve on the 'exit' being not triggered and process still exists
                 workerProcess.once('spawn', onSpawn);
 
-                // Safety: timeout
                 const t = setTimeout(() => {
                     if (resolved) return;
                     resolved = true;
-                    // If still alive, consider it started but warn
                     if (!workerProcess.killed) {
                         console.warn('[PY] Worker did not emit spawn quickly, but process exists. Marking as ready.');
                         this.isWorkerReady = true;
@@ -263,7 +244,6 @@ class PythonWorkerService {
                     }
                 }, this.startupTimeout);
 
-                // cleanup on error/close
                 workerProcess.once('error', (err) => {
                     if (resolved) return;
                     clearTimeout(t);
@@ -295,12 +275,22 @@ class PythonWorkerService {
         return this._normalizeSpawnPath(spawnPath, cwd);
     }
 
-
     handleWorkerOutput(line) {
         try {
             const response = JSON.parse(line);
             console.log('[PY] Response:', response);
 
+            // Handle progress updates
+            if (response.type === 'progress') {
+                const reportId = response.reportId;
+                const callback = this.progressCallbacks.get(reportId);
+                if (callback) {
+                    callback(response);
+                }
+                return; // Don't process as command response
+            }
+
+            // Handle command responses
             if (response.commandId !== undefined) {
                 const handler = this.pendingCommands.get(response.commandId);
                 if (handler) {
@@ -309,7 +299,8 @@ class PythonWorkerService {
                         response.status === 'LOGIN_SUCCESS' ||
                         response.status === 'NOT_LOGGED_IN' ||
                         response.status === 'MACROS_EXIST' ||
-                        response.status === 'NOT_FOUND') {
+                        response.status === 'NOT_FOUND' ||
+                        response.status === 'CANCELLED') {
                         handler.resolve(response);
                     } else {
                         handler.reject(new Error(response.error || 'Command failed'));
@@ -322,13 +313,10 @@ class PythonWorkerService {
         }
     }
 
-
-    async sendCommand(command) {
-        // Ensure worker is started (awaiting startWorker). startWorker returns or throws.
+    async sendCommand(command, options = {}) {
         try {
             await this.startWorker();
         } catch (err) {
-            // Starting worker failed — reject immediately with helpful message
             const e = new Error(`Failed to start Python worker: ${err.message}`);
             console.error('[PY] ' + e.message);
             return Promise.reject(e);
@@ -357,7 +345,6 @@ class PythonWorkerService {
         });
     }
 
-
     async closeWorker() {
         if (!this.worker) return;
 
@@ -373,7 +360,6 @@ class PythonWorkerService {
             }
         }
     }
-
 
     isReady() {
         return this.isWorkerReady && this.worker && !this.worker.killed;

@@ -1,11 +1,11 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
     Upload, CheckCircle, RefreshCw,
     Database, Search, Clock, AlertCircle,
     Pause, Play, FileText
 } from "lucide-react";
 
-// Updated API functions for Electron with proper response handling
+// Updated API functions for Electron with proper pause/resume
 const submitMacro = async (reportId, tabsNum) => {
     return window.electronAPI ? await window.electronAPI.macroFill(reportId, tabsNum) : {
         status: "SUCCESS",
@@ -21,20 +21,63 @@ const halfCheckMacroStatus = async (reportId, tabsNum) => {
     return await window.electronAPI.halfCheck(reportId, tabsNum)
 };
 
-// Dummy pause/resume functions
+// Updated pause/resume functions to use Electron API
 const pauseProcessing = async (reportId) => {
+    if (window.electronAPI) {
+        return await window.electronAPI.pauseMacroFill(reportId);
+    }
     console.log(`Dummy pause for report: ${reportId}`);
     return { status: "SUCCESS", result: { message: "Processing paused (dummy function)" } };
 };
 
 const resumeProcessing = async (reportId) => {
+    if (window.electronAPI) {
+        return await window.electronAPI.resumeMacroFill(reportId);
+    }
     console.log(`Dummy resume for report: ${reportId}`);
     return { status: "SUCCESS", result: { message: "Processing resumed (dummy function)" } };
 };
 
-// Mock progress context
+// Enhanced progress context with pause/resume support
 const useProgress = () => {
     const [progressStates, setProgressStates] = useState({});
+
+    // Set up progress listener when component mounts
+    useEffect(() => {
+        if (!window.electronAPI || !window.electronAPI.onMacroFillProgress) {
+            console.warn('Electron API or progress listener not available');
+            return;
+        }
+
+        // Set up the progress listener
+        const cleanup = window.electronAPI.onMacroFillProgress((progressData) => {
+            console.log('[RENDERER] Progress update received:', progressData);
+
+            if (progressData.reportId) {
+                setProgressStates(prev => ({
+                    ...prev,
+                    [progressData.reportId]: {
+                        ...prev[progressData.reportId],
+                        // Map the incoming progress data to our expected format
+                        status: progressData.status || 'PROCESSING',
+                        message: progressData.message || 'Processing macros...',
+                        progress: progressData.percentage || 0,
+                        paused: progressData.paused || false,
+                        data: {
+                            current: progressData.completed || 0,
+                            total: progressData.total || 0,
+                            failedRecords: progressData.failed || 0,
+                            currentMacro: progressData.currentMacroId || '',
+                            stage: progressData.stage || 'Processing'
+                        }
+                    }
+                }));
+            }
+        });
+
+        // Cleanup listener on unmount
+        return cleanup;
+    }, []);
 
     const dispatch = (action) => {
         switch (action.type) {
@@ -52,7 +95,8 @@ const useProgress = () => {
                     ...prev,
                     [action.payload.reportId]: {
                         ...prev[action.payload.reportId],
-                        paused: true
+                        paused: true,
+                        status: 'PAUSED'
                     }
                 }));
                 break;
@@ -61,7 +105,8 @@ const useProgress = () => {
                     ...prev,
                     [action.payload.reportId]: {
                         ...prev[action.payload.reportId],
-                        paused: false
+                        paused: false,
+                        status: 'PROCESSING'
                     }
                 }));
                 break;
@@ -80,7 +125,135 @@ const useProgress = () => {
     return { progressStates, dispatch };
 };
 
-// Incomplete IDs Table Component
+// Enhanced Progress Display Component with better pause/resume UI
+const ProgressDisplay = ({ progress, message, paused, data = {} }) => {
+    const {
+        current = 0,
+        total = 0,
+        failedRecords = 0,
+        currentMacro = '',
+        stage = 'Processing'
+    } = data;
+
+    // Calculate success count (completed - failed)
+    const successCount = Math.max(0, current - failedRecords);
+
+    return (
+        <div className="space-y-4">
+            <div className="bg-gray-100 border border-gray-300 rounded p-6">
+                <div className="text-center mb-6">
+                    <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 ${paused ? 'bg-yellow-200' : 'bg-blue-200'
+                        }`}>
+                        {paused ? (
+                            <Pause className="w-8 h-8 text-yellow-600" />
+                        ) : (
+                            <RefreshCw className="w-8 h-8 text-blue-600 animate-spin" />
+                        )}
+                    </div>
+                    <h3 className="text-xl font-semibold text-gray-800 mb-2">
+                        {paused ? 'Processing Paused' : 'Macro Processing'}
+                    </h3>
+                    <p className="text-gray-600 mb-4">{message}</p>
+
+                    {/* Progress bar */}
+                    <div className="w-full bg-gray-300 rounded-full h-4 mb-2">
+                        <div
+                            className={`h-4 rounded-full transition-all duration-300 ${paused ? 'bg-yellow-500' : 'bg-blue-600'
+                                }`}
+                            style={{ width: `${progress}%` }}
+                        ></div>
+                    </div>
+                    <p className="text-sm text-gray-600">{progress}% Complete</p>
+                </div>
+
+                {/* Detailed progress information */}
+                <div className="bg-white border border-gray-300 rounded p-4">
+                    <h4 className="font-semibold text-gray-800 mb-3">Progress Details</h4>
+                    <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div className="space-y-2">
+                            <div className="flex justify-between">
+                                <span className="text-gray-600">Completed:</span>
+                                <span className="font-semibold">{current} / {total}</span>
+                            </div>
+                            <div className="flex justify-between">
+                                <span className="text-gray-600">Successful:</span>
+                                <span className="font-semibold text-green-600">
+                                    {successCount}
+                                </span>
+                            </div>
+                            <div className="flex justify-between">
+                                <span className="text-gray-600">Failed:</span>
+                                <span className={`font-semibold ${failedRecords > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                    {failedRecords}
+                                </span>
+                            </div>
+                        </div>
+                        <div className="space-y-2">
+                            <div className="flex justify-between">
+                                <span className="text-gray-600">Stage:</span>
+                                <span className={`font-semibold ${paused ? 'text-yellow-600' : 'text-blue-600'
+                                    }`}>
+                                    {paused ? 'Paused' : stage}
+                                </span>
+                            </div>
+                            {currentMacro && (
+                                <div className="flex justify-between">
+                                    <span className="text-gray-600">Current Macro:</span>
+                                    <span className="font-mono text-xs truncate max-w-[120px]" title={currentMacro}>
+                                        {currentMacro}
+                                    </span>
+                                </div>
+                            )}
+                            <div className="flex justify-between">
+                                <span className="text-gray-600">Status:</span>
+                                <span className={`font-semibold ${paused ? 'text-yellow-600' :
+                                        progress === 100 ? 'text-green-600' : 'text-blue-600'
+                                    }`}>
+                                    {paused ? 'Paused' : progress === 100 ? 'Complete' : 'Processing'}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Progress stats bar */}
+                    {total > 0 && (
+                        <div className="mt-4 pt-4 border-t border-gray-200">
+                            <div className="flex h-4 rounded-full overflow-hidden">
+                                {successCount > 0 && (
+                                    <div
+                                        className="bg-green-500 h-full"
+                                        style={{ width: `${(successCount / total) * 100}%` }}
+                                        title={`Successful: ${successCount}`}
+                                    ></div>
+                                )}
+                                {failedRecords > 0 && (
+                                    <div
+                                        className="bg-red-500 h-full"
+                                        style={{ width: `${(failedRecords / total) * 100}%` }}
+                                        title={`Failed: ${failedRecords}`}
+                                    ></div>
+                                )}
+                                <div
+                                    className={`h-full ${paused ? 'bg-yellow-300' : 'bg-gray-300'
+                                        }`}
+                                    style={{ width: `${((total - current) / total) * 100}%` }}
+                                    title={`Remaining: ${total - current}`}
+                                ></div>
+                            </div>
+                            <div className="flex justify-between text-xs text-gray-600 mt-1">
+                                <span>Success: {successCount}</span>
+                                <span>Failed: {failedRecords}</span>
+                                <span>Remaining: {total - current}</span>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// Incomplete IDs Table Component (unchanged)
 const IncompleteIDsTable = ({ incompleteIds, title }) => {
     if (!incompleteIds || incompleteIds.length === 0) {
         return (
@@ -150,6 +323,10 @@ const SubmitMacro = () => {
     const [checkResult, setCheckResult] = useState(null);
     const [halfCheckResult, setHalfCheckResult] = useState(null);
 
+    // Pause/resume state
+    const [isPausing, setIsPausing] = useState(false);
+    const [isResuming, setIsResuming] = useState(false);
+
     // Get progress state for current report
     const currentProgress = reportId ? progressStates[reportId] : null;
 
@@ -183,7 +360,10 @@ const SubmitMacro = () => {
                     stopped: false,
                     data: {
                         current: 0,
-                        total: 0
+                        total: 0,
+                        failedRecords: 0,
+                        currentMacro: '',
+                        stage: 'Starting'
                     }
                 }
             }
@@ -199,24 +379,27 @@ const SubmitMacro = () => {
             if (result.status === "SUCCESS") {
                 setSubmissionResult(result);
 
-                // Update progress state with success
-                dispatch({
-                    type: 'UPDATE_PROGRESS',
-                    payload: {
-                        reportId,
-                        updates: {
-                            status: 'COMPLETE',
-                            message: result.result?.message || "Macro submitted successfully",
-                            progress: 100,
-                            data: {
-                                current: 100,
-                                total: 100,
-                                failedRecords: 0,
-                                numTabs: tabsNumValue
+                // If we don't have progress data from events, use the final result
+                if (!currentProgress || currentProgress.progress < 100) {
+                    dispatch({
+                        type: 'UPDATE_PROGRESS',
+                        payload: {
+                            reportId,
+                            updates: {
+                                status: 'COMPLETE',
+                                message: result.result?.message || "Macro submitted successfully",
+                                progress: 100,
+                                data: {
+                                    current: currentProgress?.data?.total || 100,
+                                    total: currentProgress?.data?.total || 100,
+                                    failedRecords: currentProgress?.data?.failedRecords || 0,
+                                    numTabs: tabsNumValue,
+                                    stage: 'Complete'
+                                }
                             }
                         }
-                    }
-                });
+                    });
+                }
 
                 setCurrentStep('success');
             } else {
@@ -331,29 +514,12 @@ const SubmitMacro = () => {
         }
     };
 
-    // Reset process
-    const resetProcess = () => {
-        setCurrentStep('report-id-input');
-        setReportId("");
-        setTabsNum("1");
-        setError("");
-        setIsSubmitting(false);
-        setSubmissionResult(null);
-        setCheckResult(null);
-        setHalfCheckResult(null);
-
-        // Clear progress state if exists
-        if (reportId && progressStates[reportId]) {
-            dispatch({
-                type: 'CLEAR_PROGRESS',
-                payload: { reportId }
-            });
-        }
-    };
-
-    // Handle pause processing (dummy function)
+    // Enhanced pause processing function
     const handlePauseProcessing = async () => {
         if (!reportId) return;
+
+        setIsPausing(true);
+        setError("");
 
         try {
             console.log(`Pausing processing for report: ${reportId}`);
@@ -384,12 +550,17 @@ const SubmitMacro = () => {
                 type: 'RESUME_PROGRESS',
                 payload: { reportId }
             });
+        } finally {
+            setIsPausing(false);
         }
     };
 
-    // Handle resume processing (dummy function)
+    // Enhanced resume processing function
     const handleResumeProcessing = async () => {
         if (!reportId) return;
+
+        setIsResuming(true);
+        setError("");
 
         try {
             console.log(`Resuming processing for report: ${reportId}`);
@@ -420,35 +591,31 @@ const SubmitMacro = () => {
                 type: 'PAUSE_PROGRESS',
                 payload: { reportId }
             });
+        } finally {
+            setIsResuming(false);
         }
     };
 
-    // Simple progress display component
-    const SimpleProgressDisplay = ({ progress, message, paused }) => {
-        return (
-            <div className="space-y-4">
-                <div className="bg-gray-100 border border-gray-300 rounded p-6">
-                    <div className="text-center">
-                        <div className="w-16 h-16 bg-blue-200 rounded-full flex items-center justify-center mx-auto mb-4">
-                            <RefreshCw className={`w-8 h-8 text-blue-600 ${paused ? '' : 'animate-spin'}`} />
-                        </div>
-                        <h3 className="text-xl font-semibold text-gray-800 mb-2">
-                            {paused ? 'Processing Paused' : 'Processing Macros'}
-                        </h3>
-                        <p className="text-gray-600 mb-4">{message}</p>
+    // Reset process
+    const resetProcess = () => {
+        setCurrentStep('report-id-input');
+        setReportId("");
+        setTabsNum("1");
+        setError("");
+        setIsSubmitting(false);
+        setSubmissionResult(null);
+        setCheckResult(null);
+        setHalfCheckResult(null);
+        setIsPausing(false);
+        setIsResuming(false);
 
-                        {/* Simple progress bar */}
-                        <div className="w-full bg-gray-300 rounded-full h-4 mb-2">
-                            <div
-                                className="bg-blue-600 h-4 rounded-full transition-all duration-300"
-                                style={{ width: `${progress}%` }}
-                            ></div>
-                        </div>
-                        <p className="text-sm text-gray-600">{progress}% Complete</p>
-                    </div>
-                </div>
-            </div>
-        );
+        // Clear progress state if exists
+        if (reportId && progressStates[reportId]) {
+            dispatch({
+                type: 'CLEAR_PROGRESS',
+                payload: { reportId }
+            });
+        }
     };
 
     return (
@@ -568,7 +735,7 @@ const SubmitMacro = () => {
                                             <p className="text-sm text-gray-600">
                                                 <strong>Full Check:</strong> Checks all macros in the report<br />
                                                 <strong>Half Check:</strong> Only checks previously incomplete macros (faster)<br />
-                                                <strong>Submit Macro:</strong> Submits macros for the report
+                                                <strong>Submit Macro:</strong> Submits macros for the report with pause/resume support
                                             </p>
                                         </div>
                                     </div>
@@ -580,36 +747,45 @@ const SubmitMacro = () => {
                     {/* Step 2: Submission In Progress */}
                     {currentStep === 'submission-in-progress' && currentProgress && (
                         <div className="space-y-6">
-                            <SimpleProgressDisplay
-                                progress={currentProgress.progress}
-                                message={currentProgress.message}
+                            <ProgressDisplay
+                                progress={currentProgress.progress || 0}
+                                message={currentProgress.message || "Processing macros..."}
                                 paused={currentProgress.paused}
+                                data={currentProgress.data || {}}
                             />
 
-                            {/* Pause/Resume Controls */}
+                            {/* Enhanced Pause/Resume Controls */}
                             <div className="flex justify-center gap-3 mt-6">
                                 {currentProgress.paused ? (
                                     <button
                                         onClick={handleResumeProcessing}
-                                        disabled={currentProgress.stopped}
+                                        disabled={isResuming || currentProgress.stopped || currentProgress.status === 'COMPLETE'}
                                         className="px-6 py-3 bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white rounded font-semibold flex items-center gap-2"
                                     >
-                                        <Play className="w-4 h-4" />
-                                        Resume Processing
+                                        {isResuming ? (
+                                            <RefreshCw className="w-4 h-4 animate-spin" />
+                                        ) : (
+                                            <Play className="w-4 h-4" />
+                                        )}
+                                        {isResuming ? "Resuming..." : "Resume Processing"}
                                     </button>
                                 ) : (
                                     <button
                                         onClick={handlePauseProcessing}
-                                        disabled={currentProgress.stopped || currentProgress.status === 'COMPLETED'}
+                                        disabled={isPausing || currentProgress.stopped || currentProgress.status === 'COMPLETE'}
                                         className="px-6 py-3 bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-400 text-white rounded font-semibold flex items-center gap-2"
                                     >
-                                        <Pause className="w-4 h-4" />
-                                        Pause Processing
+                                        {isPausing ? (
+                                            <RefreshCw className="w-4 h-4 animate-spin" />
+                                        ) : (
+                                            <Pause className="w-4 h-4" />
+                                        )}
+                                        {isPausing ? "Pausing..." : "Pause Processing"}
                                     </button>
                                 )}
                             </div>
 
-                            {/* Pause Status Message */}
+                            {/* Enhanced Pause Status Message */}
                             {currentProgress.paused && (
                                 <div className="bg-yellow-100 border border-yellow-300 rounded p-4">
                                     <div className="flex items-center gap-3">
@@ -617,7 +793,23 @@ const SubmitMacro = () => {
                                         <div>
                                             <p className="font-semibold text-yellow-800">Processing Paused</p>
                                             <p className="text-sm text-yellow-700">
-                                                Click "Resume Processing" to continue where you left off
+                                                Click "Resume Processing" to continue where you left off.
+                                                Your progress is saved and will resume from the current state.
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Processing Status Message */}
+                            {!currentProgress.paused && currentProgress.status === 'PROCESSING' && (
+                                <div className="bg-blue-100 border border-blue-300 rounded p-4">
+                                    <div className="flex items-center gap-3">
+                                        <RefreshCw className="w-5 h-5 text-blue-600 animate-spin" />
+                                        <div>
+                                            <p className="font-semibold text-blue-800">Processing in Progress</p>
+                                            <p className="text-sm text-blue-700">
+                                                You can pause the processing at any time and resume later.
                                             </p>
                                         </div>
                                     </div>
@@ -640,8 +832,8 @@ const SubmitMacro = () => {
                                     </p>
                                 </div>
 
-                                {/* Submission Details */}
-                                {currentProgress && (
+                                {/* Submission Details - Use the final result data instead of progress data */}
+                                {submissionResult?.result && (
                                     <div className="bg-white border border-green-300 rounded p-4 mb-4">
                                         <h4 className="font-semibold text-green-800 mb-2">Submission Details:</h4>
                                         <div className="space-y-2 text-sm">
@@ -649,28 +841,57 @@ const SubmitMacro = () => {
                                                 <span className="text-gray-600">Report ID:</span>
                                                 <span className="font-mono">{reportId}</span>
                                             </div>
-                                            {currentProgress.data?.numTabs && (
-                                                <div className="flex justify-between">
-                                                    <span className="text-gray-600">Tabs Used:</span>
-                                                    <span>{currentProgress.data.numTabs}</span>
-                                                </div>
-                                            )}
-                                            {currentProgress.data?.total && (
-                                                <div className="flex justify-between">
-                                                    <span className="text-gray-600">Total Processed:</span>
-                                                    <span>{currentProgress.data.total}</span>
-                                                </div>
-                                            )}
-                                            {currentProgress.data?.failedRecords !== undefined && (
-                                                <div className="flex justify-between">
-                                                    <span className="text-gray-600">Failed Records:</span>
-                                                    <span className={currentProgress.data.failedRecords > 0 ? "text-red-600" : "text-green-600"}>
-                                                        {currentProgress.data.failedRecords}
-                                                    </span>
-                                                </div>
-                                            )}
+                                            <div className="flex justify-between">
+                                                <span className="text-gray-600">Total Macros:</span>
+                                                <span>{submissionResult.result.total || 0}</span>
+                                            </div>
+                                            <div className="flex justify-between">
+                                                <span className="text-gray-600">Successfully Completed:</span>
+                                                <span className="text-green-600">
+                                                    {submissionResult.result.completed || 0}
+                                                </span>
+                                            </div>
+                                            <div className="flex justify-between">
+                                                <span className="text-gray-600">Failed:</span>
+                                                <span className={submissionResult.result.failed > 0 ? "text-red-600" : "text-green-600"}>
+                                                    {submissionResult.result.failed || 0}
+                                                </span>
+                                            </div>
                                             <div className="flex justify-between">
                                                 <span className="text-gray-600">Status:</span>
+                                                <span className="text-green-600 font-semibold">{submissionResult.result.status}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Fallback to progress data if result data is not available */}
+                                {!submissionResult?.result && currentProgress && (
+                                    <div className="bg-white border border-green-300 rounded p-4 mb-4">
+                                        <h4 className="font-semibold text-green-800 mb-2">Submission Details:</h4>
+                                        <div className="space-y-2 text-sm">
+                                            <div className="flex justify-between">
+                                                <span className="text-gray-600">Report ID:</span>
+                                                <span className="font-mono">{reportId}</span>
+                                            </div>
+                                            <div className="flex justify-between">
+                                                <span className="text-gray-600">Total Assets:</span>
+                                                <span>{currentProgress.data?.total || 0}</span>
+                                            </div>
+                                            <div className="flex justify-between">
+                                                <span className="text-gray-600">Successfully Processed:</span>
+                                                <span className="text-green-600">
+                                                    {Math.max(0, (currentProgress.data?.current || 0) - (currentProgress.data?.failedRecords || 0))}
+                                                </span>
+                                            </div>
+                                            <div className="flex justify-between">
+                                                <span className="text-gray-600">Failed:</span>
+                                                <span className={currentProgress.data?.failedRecords > 0 ? "text-red-600" : "text-green-600"}>
+                                                    {currentProgress.data?.failedRecords || 0}
+                                                </span>
+                                            </div>
+                                            <div className="flex justify-between">
+                                                <span className="text-gray-600">Final Status:</span>
                                                 <span className="text-green-600 font-semibold">Completed</span>
                                             </div>
                                         </div>
@@ -696,6 +917,7 @@ const SubmitMacro = () => {
                         </div>
                     )}
 
+                    {/* Other steps remain unchanged */}
                     {/* Checking Status */}
                     {currentStep === 'checking' && (
                         <div className="space-y-6">

@@ -11,6 +11,49 @@ MONGO_URI = "mongodb+srv://Aasim:userAasim123@electron.cwbi8id.mongodb.net"
 client = AsyncIOMotorClient(MONGO_URI)
 db = client["test"]
 
+# Global pause state management
+pause_states = {}
+
+def get_pause_state(report_id):
+    """Get pause state for a report"""
+    return pause_states.get(report_id, {"paused": False, "stopped": False})
+
+def set_pause_state(report_id, paused=None, stopped=None):
+    """Set pause state for a report"""
+    if report_id not in pause_states:
+        pause_states[report_id] = {"paused": False, "stopped": False}
+    
+    if paused is not None:
+        pause_states[report_id]["paused"] = paused
+    if stopped is not None:
+        pause_states[report_id]["stopped"] = stopped
+    
+    return pause_states[report_id]
+
+def clear_pause_state(report_id):
+    """Clear pause state for a report"""
+    if report_id in pause_states:
+        del pause_states[report_id]
+
+async def check_pause_state(report_id):
+    """Check if processing should pause or stop"""
+    state = get_pause_state(report_id)
+    
+    # Check if stopped
+    if state.get("stopped"):
+        return {"action": "stop"}
+    
+    # Wait while paused
+    while state.get("paused"):
+        await asyncio.sleep(0.5)
+        state = get_pause_state(report_id)
+        
+        # Check for stop while paused
+        if state.get("stopped"):
+            return {"action": "stop"}
+    
+    return {"action": "continue"}
+
 def balanced_chunks(lst, n):
     """Split list into n balanced chunks"""
     k, m = divmod(len(lst), n)
@@ -45,13 +88,12 @@ async def fill_macro_form(page, macro_id, macro_data, field_map, field_types, re
 
 async def handle_macro_edits(browser, record, tabs_num=3, record_id=None):
     """
-    Edit macros in parallel using multiple tabs
+    Edit macros in parallel using multiple tabs with pause/resume support
     Expects asset_data to already have 'id' field populated for each asset
     """    
     asset_data = record.get("asset_data", [])
     if not asset_data: 
         return {"status": "SUCCESS", "message": "No assets to edit"}
-
 
     total_assets = len(asset_data)
     
@@ -62,6 +104,9 @@ async def handle_macro_edits(browser, record, tabs_num=3, record_id=None):
         return {"status": "FAILED", "error": error_msg}
     
     print(f"Asset data with IDs: {[(i, asset.get('id')) for i, asset in enumerate(asset_data)]}")
+
+    # Initialize pause state
+    set_pause_state(record_id, paused=False, stopped=False)
 
     # Create pages for parallel processing
     main_page = browser.tabs[0]
@@ -79,6 +124,12 @@ async def handle_macro_edits(browser, record, tabs_num=3, record_id=None):
         print(f"Processing chunk {chunk_index} with {len(asset_chunk)} assets")
         
         for asset_index, asset in enumerate(asset_chunk):
+            # Check pause/stop state before processing each asset
+            pause_check = await check_pause_state(record_id)
+            if pause_check["action"] == "stop":
+                print(f"Chunk {chunk_index} stopped by user request")
+                return
+            
             macro_id = asset.get("id")
             
             if macro_id is None:
@@ -89,6 +140,30 @@ async def handle_macro_edits(browser, record, tabs_num=3, record_id=None):
             
             try:
                 print(f"Editing macro {macro_id} (chunk {chunk_index}, asset {asset_index})")
+                
+                # Send progress update BEFORE processing
+                async with completed_lock:
+                    current_completed = completed
+                    current_failed = failed
+                    percentage = round((current_completed / total_assets) * 100, 2)
+                
+                # Get current pause state
+                pause_state = get_pause_state(record_id)
+                
+                # Send progress with current macro being processed
+                progress_data = {
+                    "type": "progress",
+                    "reportId": record_id,
+                    "currentMacroId": macro_id,
+                    "completed": current_completed,
+                    "failed": current_failed,
+                    "total": total_assets,
+                    "percentage": percentage,
+                    "paused": pause_state.get("paused", False),
+                    "message": f"Processing macro {macro_id} ({current_completed}/{total_assets})"
+                }
+                print(json.dumps(progress_data), flush=True)
+                
                 result = await fill_macro_form(
                     page,
                     macro_id,
@@ -105,12 +180,47 @@ async def handle_macro_edits(browser, record, tabs_num=3, record_id=None):
                     current_completed = completed
                     current_failed = failed
                 
+                # Send progress update AFTER processing
                 percentage = round((current_completed / total_assets) * 100, 2)
-                print(json.dumps("percentage", percentage))
+                pause_state = get_pause_state(record_id)
+                
+                progress_data = {
+                    "type": "progress",
+                    "reportId": record_id,
+                    "currentMacroId": macro_id,
+                    "completed": current_completed,
+                    "failed": current_failed,
+                    "total": total_assets,
+                    "percentage": percentage,
+                    "paused": pause_state.get("paused", False),
+                    "message": f"Completed macro {macro_id} ({current_completed}/{total_assets})",
+                    "status": result.get("status")
+                }
+                print(json.dumps(progress_data), flush=True)
                             
             except Exception as e:
                 async with completed_lock:
                     failed += 1
+                    current_completed = completed
+                    current_failed = failed
+                
+                # Send error progress
+                percentage = round((current_completed / total_assets) * 100, 2)
+                pause_state = get_pause_state(record_id)
+                
+                error_data = {
+                    "type": "progress",
+                    "reportId": record_id,
+                    "currentMacroId": macro_id,
+                    "completed": current_completed,
+                    "failed": current_failed,
+                    "total": total_assets,
+                    "percentage": percentage,
+                    "paused": pause_state.get("paused", False),
+                    "message": f"Error processing macro {macro_id}: {str(e)}",
+                    "status": "FAILED"
+                }
+                print(json.dumps(error_data), flush=True)
 
     # Create tasks for parallel processing
     tasks = []
@@ -124,10 +234,15 @@ async def handle_macro_edits(browser, record, tabs_num=3, record_id=None):
     for page in pages[1:]:
         await page.close()
     
+    # Clear pause state after completion
+    clear_pause_state(record_id)
+    
     return {
         "status": "SUCCESS",
         "message": f"Completed editing {completed} macros",
-        "failed": failed
+        "completed": completed,
+        "failed": failed,
+        "total": total_assets
     }
 
 async def run_macro_edit(browser, report_id, tabs_num=3):
@@ -151,6 +266,19 @@ async def run_macro_edit(browser, report_id, tabs_num=3):
             {"_id": record["_id"]},
             {"$set": {"editStartTime": datetime.now(timezone.utc)}}
         )
+
+        # Send initial progress
+        initial_progress = {
+            "type": "progress",
+            "reportId": report_id,
+            "completed": 0,
+            "failed": 0,
+            "total": len(asset_data),
+            "percentage": 0,
+            "paused": False,
+            "message": "Starting macro fill process..."
+        }
+        print(json.dumps(initial_progress), flush=True)
 
         # Process macro edits
         edit_result = await handle_macro_edits(
@@ -182,4 +310,43 @@ async def run_macro_edit(browser, report_id, tabs_num=3):
         except:
             pass
         
+        # Clear pause state on error
+        clear_pause_state(report_id)
+        
         return {"status": "FAILED", "error": str(e), "traceback": tb}
+
+async def pause_macro_edit(report_id):
+    """Pause macro editing for a report"""
+    try:
+        state = set_pause_state(report_id, paused=True)
+        return {
+            "status": "SUCCESS",
+            "message": f"Paused macro editing for report {report_id}",
+            "paused": state["paused"]
+        }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}
+
+async def resume_macro_edit(report_id):
+    """Resume macro editing for a report"""
+    try:
+        state = set_pause_state(report_id, paused=False)
+        return {
+            "status": "SUCCESS",
+            "message": f"Resumed macro editing for report {report_id}",
+            "paused": state["paused"]
+        }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}
+
+async def stop_macro_edit(report_id):
+    """Stop macro editing for a report"""
+    try:
+        state = set_pause_state(report_id, stopped=True)
+        return {
+            "status": "SUCCESS",
+            "message": f"Stopped macro editing for report {report_id}",
+            "stopped": state["stopped"]
+        }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}

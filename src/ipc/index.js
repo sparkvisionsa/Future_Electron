@@ -13,6 +13,9 @@ function registerIpcHandlers() {
     ipcMain.handle('extract-asset-data', reportHandlers.handleExtractAssetData);
     ipcMain.handle('grab-macro-ids', reportHandlers.handleGrabMacroIds);
     ipcMain.handle('macro-fill', reportHandlers.handleMacroFill);
+    ipcMain.handle('pause-macro-fill', reportHandlers.handlePauseMacroFill);
+    ipcMain.handle('resume-macro-fill', reportHandlers.handleResumeMacroFill);
+    ipcMain.handle('stop-macro-fill', reportHandlers.handleStopMacroFill);
     ipcMain.handle('full-check', reportHandlers.handleFullCheck);
     ipcMain.handle('half-check', reportHandlers.handleHalfCheck);
 
@@ -42,6 +45,9 @@ function unregisterIpcHandlers() {
     ipcMain.removeAllListeners('extract-asset-data');
     ipcMain.removeAllListeners('grab-macro-ids');
     ipcMain.removeAllListeners('macro-fill');
+    ipcMain.removeAllListeners('pause-macro-fill');
+    ipcMain.removeAllListeners('resume-macro-fill');
+    ipcMain.removeAllListeners('stop-macro-fill');
     ipcMain.removeAllListeners('full-check');
     ipcMain.removeAllListeners('half-check');
 
