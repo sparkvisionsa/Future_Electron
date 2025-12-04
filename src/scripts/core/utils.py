@@ -18,13 +18,23 @@ def log(msg: str, level: str = "INFO"):
     icons = {"INFO":"ℹ️", "OK":"✅", "ERR":"❌", "STEP":"👉"}
     print(f"{icons.get(level,'ℹ️')} [{stamp}] {msg}", flush=True)
 
-async def safe_query_selector_all(page, selector):
-    """Safely query multiple elements without stale element issues"""
-    try:
-        return await page.query_selector_all(selector)
-    except Exception as e:
-        print(f"Error querying {selector}: {e}", file=sys.stderr)
-        return []
+async def safe_query_selector_all(page, selector, timeout=100, interval=0.5):
+    start = time.time()
+    
+    while True:
+        try:
+            elements = await page.query_selector_all(selector)
+            if elements:
+                return elements
+
+        except Exception as e:
+            print(f"Error querying {selector}: {e}", file=sys.stderr)
+
+        if time.time() - start >= timeout:
+            print(f"Timeout: No elements matched '{selector}' after {timeout} seconds", file=sys.stderr)
+            return []
+
+        await asyncio.sleep(interval)
 
 async def wait_for_table_rows(page, timeout=100):
     """Wait for table to have valid data rows"""
