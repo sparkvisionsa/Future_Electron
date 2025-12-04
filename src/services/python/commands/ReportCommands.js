@@ -35,6 +35,14 @@ class ReportCommands {
         });
     }
 
+    async retryMacroIds(reportId, tabsNum) {
+        return this._sendCommand({
+            action: 'retry-macro-ids',
+            reportId,
+            tabsNum
+        });
+    }
+
     async macroFill(reportId, tabsNum) {
         return this._sendCommand({
             action: 'macro-edit',

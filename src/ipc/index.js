@@ -19,6 +19,7 @@ function registerIpcHandlers() {
     ipcMain.handle('create-macros', reportHandlers.handleCreateMacros);
     ipcMain.handle('extract-asset-data', reportHandlers.handleExtractAssetData);
     ipcMain.handle('grab-macro-ids', reportHandlers.handleGrabMacroIds);
+    ipcMain.handle('retry-macro-ids', reportHandlers.handleRetryMacroIds);
     ipcMain.handle('macro-fill', reportHandlers.handleMacroFill);
 
     ipcMain.handle('pause-macro-fill', reportHandlers.handlePauseMacroFill);
@@ -62,6 +63,7 @@ function unregisterIpcHandlers() {
     ipcMain.removeAllListeners('create-macros');
     ipcMain.removeAllListeners('extract-asset-data');
     ipcMain.removeAllListeners('grab-macro-ids');
+    ipcMain.removeAllListeners('retry-macro-ids');
     ipcMain.removeAllListeners('macro-fill');
 
     ipcMain.removeAllListeners('pause-macro-fill');

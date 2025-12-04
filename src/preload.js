@@ -46,6 +46,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     createMacros: (reportId, macroCount, tabsNum, batchSize) => safeInvoke('create-macros', reportId, macroCount, tabsNum, batchSize),
     extractAssetData: (excelFilePath) => safeInvoke('extract-asset-data', excelFilePath),
     grabMacroIds: (reportId, tabsNum) => safeInvoke('grab-macro-ids', reportId, tabsNum),
+    retryMacroIds: (reportId, tabsNum) => safeInvoke('retry-macro-ids', reportId, tabsNum),
     macroFill: (reportId, tabsNum) => safeInvoke('macro-fill', reportId, tabsNum),
 
     // Pause/Resume/Stop controls

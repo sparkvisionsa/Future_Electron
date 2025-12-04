@@ -178,6 +178,38 @@ async def get_macro_ids_from_page(page, base_url, page_num, tab_id):
     
     return local_macro_ids
 
+async def update_report_pg_count(report_id, pg_count, db_name='test', collection_name='reports'):
+    """
+    Update the report document's pg_count field to the given number.
+    Returns True on success, False on error.
+    """
+    client = None
+    try:
+        client = get_motor_client()
+        db = client[db_name]
+        collection = db[collection_name]
+
+        result = await collection.update_one(
+            {'report_id': report_id},
+            {'$set': {'pg_count': int(pg_count), 'updatedAt': datetime.now()}}
+        )
+
+        if result.modified_count > 0:
+            print(f"[MONGO_DB] Successfully set pg_count={pg_count} for report {report_id}", file=sys.stderr)
+        else:
+            # Document may exist but field already equal to value; treat as success
+            print(f"[MONGO_DB] pg_count update for report {report_id} completed (modified_count={result.modified_count})", file=sys.stderr)
+        return True
+
+    except Exception as e:
+        print(f"[MONGO_DB] Error updating pg_count for report {report_id}: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
+        return False
+    finally:
+        if client:
+            client.close()
+
 async def get_all_macro_ids_parallel(browser, report_id, tabs_num=3):
     try:
         if not report_id:
@@ -201,6 +233,7 @@ async def get_all_macro_ids_parallel(browser, report_id, tabs_num=3):
         
         total_pages = max(page_numbers) if page_numbers else 1
         print(f"[MACRO_ID] Found {total_pages} pages to scan", file=sys.stderr)
+        await update_report_pg_count(report_id, total_pages)
         
         # Create pages for parallel processing
         pages = [main_page] + [
@@ -258,3 +291,142 @@ async def get_all_macro_ids_parallel(browser, report_id, tabs_num=3):
         import traceback
         traceback.print_exc()
         return []
+
+
+async def retry_get_missing_macro_ids(browser, report_id, tabs_num=3, db_name='test', collection_name='reports'):
+    """
+    Retry version: only process pages for which assets in the report are missing pg_no / id.
+    """
+    client = None
+    try:
+        client = get_motor_client()
+        db = client[db_name]
+        collection = db[collection_name]
+
+        # Load the report document
+        report = await collection.find_one({'report_id': report_id})
+        if not report:
+            print(f"[MONGO_DB] ERROR: Report with ID {report_id} not found", file=sys.stderr)
+            return False
+
+        existing_assets = report.get('asset_data', [])
+        if not existing_assets:
+            print(f"[MONGO_DB] ERROR: No asset_data found in report {report_id}", file=sys.stderr)
+            return False
+
+        # Determine total pages from live site (like existing logic)
+        base_url = f"https://qima.taqeem.sa/report/{report_id}"
+        main_page = browser.tabs[0]
+        await main_page.get(base_url)
+        await asyncio.sleep(2)
+        await wait_for_element(main_page, "li", timeout=30)
+        pagination_links = await main_page.query_selector_all('ul.pagination li a')
+        page_numbers = []
+        for link in pagination_links:
+            text = link.text
+            if text and text.strip().isdigit():
+                page_numbers.append(int(text.strip()))
+        total_pages = max(page_numbers) if page_numbers else 1
+        print(f"[RETRY] Found {total_pages} total pages", file=sys.stderr)
+        await update_report_pg_count(report_id, total_pages, db_name=db_name, collection_name=collection_name)
+
+        # Find which pg_no are already present in existing_assets
+        present_pg_nos = set()
+        for asset in existing_assets:
+            pg = asset.get('pg_no')
+            if pg is not None:
+                try:
+                    present_pg_nos.add(int(pg))
+                except ValueError:
+                    pass
+
+        # Calculate missing page numbers
+        all_pg_nos = set(range(1, total_pages + 1))
+        missing_pg_nos = sorted(all_pg_nos - present_pg_nos)
+        
+        if not missing_pg_nos:
+            print(f"[RETRY] No missing pages to retry for report {report_id}", file=sys.stderr)
+            return {"status": "NO_MISSING_PAGES", "macro_ids_with_pages": []}
+
+        print(f"[RETRY] Missing page numbers to process: {missing_pg_nos}", file=sys.stderr)
+
+        # Prepare tabs (reuse existing logic)
+        pages = [main_page] + [
+            await browser.get("about:blank", new_tab=True)
+            for _ in range(min(tabs_num - 1, len(missing_pg_nos)))
+        ]
+        page_chunks = get_balanced_page_distribution(len(missing_pg_nos), len(pages))
+        # But we want page_chunks to contain actual page numbers, not counts
+        # So map sequentially
+        pg_iter = iter(missing_pg_nos)
+        page_chunks = [
+            [next(pg_iter) for _ in chunk] for chunk in page_chunks
+        ]
+
+        all_macro_ids_with_pages = []
+        macro_ids_lock = asyncio.Lock()
+
+        async def process_pages_chunk(page, page_numbers_chunk, tab_id):
+            local = []
+            for pg in page_numbers_chunk:
+                ids = await get_macro_ids_from_page(page, base_url, pg, tab_id)
+                local.extend(ids)
+            async with macro_ids_lock:
+                all_macro_ids_with_pages.extend(local)
+            print(f"[RETRY-TAB-{tab_id}] Completed pages {page_numbers_chunk}, found {len(local)} macro IDs", file=sys.stderr)
+
+        tasks = []
+        for i, (page, chunk) in enumerate(zip(pages, page_chunks)):
+            if chunk:
+                tasks.append(process_pages_chunk(page, chunk, i))
+        await asyncio.gather(*tasks)
+
+        for p in pages[1:]:
+            await p.close()
+
+        if all_macro_ids_with_pages:
+            # Now update only those assets missing pg_no — we need to merge carefully
+            # First, build a map page_no -> list of macro_ids
+            by_page = {}
+            for macro_id, pg in all_macro_ids_with_pages:
+                by_page.setdefault(pg, []).append(macro_id)
+
+            # Update existing asset_data list
+            updated_assets = []
+            idx = 0
+            # We'll iterate old assets; for each asset lacking pg_no/id, we assign from by_page in order
+            for asset in existing_assets:
+                if asset.get('pg_no') in (None, '', 0):
+                    # find next available macro_id for missing page
+                    # get corresponding page — this is ambiguous if multiple assets per page
+                    # For simplicity, assign first unused macro_id from first missing page, then remove it
+                    # (you may need a more robust mapping depending on your data)
+                    for pg, id_list in by_page.items():
+                        if id_list:
+                            new_id = id_list.pop(0)
+                            asset = asset.copy()
+                            asset['id'] = str(new_id)
+                            asset['pg_no'] = str(pg)
+                            break
+                    updated_assets.append(asset)
+                else:
+                    updated_assets.append(asset)
+
+            # Update DB
+            result = await collection.update_one(
+                {'report_id': report_id},
+                {'$set': {'asset_data': updated_assets, 'updatedAt': datetime.now()}}
+            )
+            print(f"[MONGO_DB] Retry update for report {report_id}, modified_count={result.modified_count}", file=sys.stderr)
+            return {"status": "RETRY_SUCCESS", "macro_ids_with_pages": all_macro_ids_with_pages}
+        else:
+            print(f"[RETRY] No new macro IDs found during retry for report {report_id}", file=sys.stderr)
+            return {"status": "RETRY_NO_IDS_FOUND", "macro_ids_with_pages": []}
+
+    except Exception as e:
+        print(f"[RETRY] Error in retry_get_missing_macro_ids: {e}", file=sys.stderr)
+        import traceback; traceback.print_exc()
+        return False
+    finally:
+        if client:
+            client.close()

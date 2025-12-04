@@ -106,6 +106,15 @@ const reportHandlers = {
         }
     },
 
+    async handleRetryMacroIds(event, reportId, tabsNum) {
+        try {
+            return await pythonAPI.report.retryMacroIds(reportId, tabsNum);
+        } catch (err) {
+            console.error('[MAIN] Retry macro IDs error:', err && err.stack ? err.stack : err);
+            return { status: 'FAILED', error: err.message || String(err) };
+        }
+    },
+
     async handleMacroFill(event, reportId, tabsNum) {
         try {
             // Get the window that sent the event

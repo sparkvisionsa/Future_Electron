@@ -6,8 +6,12 @@ import {
     FileText,
     RefreshCw,
     List,
-    Database
+    Database,
+    RotateCcw,
+    Search // Added for check missing pages icon
 } from "lucide-react";
+
+import { checkMissingPages } from "../../api/report";
 
 const GrabMacroIds = () => {
     // Step management
@@ -19,9 +23,12 @@ const GrabMacroIds = () => {
 
     // Error state
     const [error, setError] = useState("");
+    const [missingPagesInfo, setMissingPagesInfo] = useState(null);
 
     // Grabbing state
     const [isGrabbingMacros, setIsGrabbingMacros] = useState(false);
+    const [isRetryingMacros, setIsRetryingMacros] = useState(false);
+    const [isCheckingMissingPages, setIsCheckingMissingPages] = useState(false);
     const [grabResult, setGrabResult] = useState(null);
     const [macroIds, setMacroIds] = useState([]);
 
@@ -39,6 +46,7 @@ const GrabMacroIds = () => {
         }
 
         setError("");
+        setMissingPagesInfo(null);
         setIsGrabbingMacros(true);
         setCurrentStep('grabbing-in-progress');
 
@@ -68,6 +76,87 @@ const GrabMacroIds = () => {
         }
     };
 
+    // Handle retry macro IDs grabbing using Electron IPC
+    const handleRetryGrabMacroIds = async () => {
+        if (!reportId.trim()) {
+            setError("Please enter a report ID");
+            return;
+        }
+
+        const tabsNumValue = parseInt(tabsNum);
+        if (isNaN(tabsNumValue) || tabsNumValue < 1) {
+            setError("Please enter a valid number of tabs (minimum 1)");
+            return;
+        }
+
+        setError("");
+        setMissingPagesInfo(null);
+        setIsRetryingMacros(true);
+        setCurrentStep('grabbing-in-progress');
+
+        try {
+            console.log(`Retrying grab macro IDs for report: ${reportId} with tabs: ${tabsNumValue}`);
+
+            // Use Electron IPC retry endpoint
+            const result = await window.electronAPI.retryMacroIds(reportId, tabsNumValue);
+            console.log("Retry macro IDs result:", result);
+
+            setGrabResult(result);
+
+            if (result.status == "SUCCESS") {
+                const ids = result?.macro_ids_with_pages || [];
+                setMacroIds(Array.isArray(ids) ? ids : []);
+                setCurrentStep('success');
+            } else {
+                setError(result.error || 'Failed to retry grabbing macro IDs');
+                setCurrentStep('error');
+            }
+        } catch (err) {
+            console.error("Error retrying macro IDs:", err);
+            setError(err.message || 'An unexpected error occurred while retrying macro IDs');
+            setCurrentStep('error');
+        } finally {
+            setIsRetryingMacros(false);
+        }
+    };
+
+    // Handle check missing pages
+    const handleCheckMissingPages = async () => {
+        if (!reportId.trim()) {
+            setError("Please enter a report ID");
+            return;
+        }
+
+        setError("");
+        setIsCheckingMissingPages(true);
+
+        try {
+            console.log(`Checking missing pages for report: ${reportId}`);
+
+            // Call the API function
+            const result = await checkMissingPages(reportId);
+            console.log("Missing pages check result:", result);
+
+            setMissingPagesInfo(result.data);
+
+            // Show success message
+            if (result.data.success) {
+                if (result.data.hasMissing) {
+                    setError(`Missing pages detected: ${result.data.missingPages.join(', ')}`);
+                } else {
+                    setError("No missing pages found! All pages are present.");
+                }
+            } else {
+                setError("Failed to check missing pages");
+            }
+        } catch (err) {
+            console.error("Error checking missing pages:", err);
+            setError(err.message || 'An unexpected error occurred while checking missing pages');
+        } finally {
+            setIsCheckingMissingPages(false);
+        }
+    };
+
     // Reset process
     const resetProcess = () => {
         setCurrentStep('report-id-input');
@@ -75,8 +164,11 @@ const GrabMacroIds = () => {
         setTabsNum("1");
         setError("");
         setIsGrabbingMacros(false);
+        setIsRetryingMacros(false);
+        setIsCheckingMissingPages(false);
         setGrabResult(null);
         setMacroIds([]);
+        setMissingPagesInfo(null);
     };
 
     // Handle back button
@@ -139,6 +231,7 @@ const GrabMacroIds = () => {
                                             onChange={(e) => {
                                                 setReportId(e.target.value);
                                                 setError("");
+                                                setMissingPagesInfo(null);
                                             }}
                                             className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
                                             placeholder="Enter report ID"
@@ -160,6 +253,7 @@ const GrabMacroIds = () => {
                                             onChange={(e) => {
                                                 setTabsNum(e.target.value);
                                                 setError("");
+                                                setMissingPagesInfo(null);
                                             }}
                                             className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
                                             placeholder="Enter number of tabs"
@@ -170,11 +264,11 @@ const GrabMacroIds = () => {
                                     </div>
                                 </div>
 
-                                {/* Action Button */}
-                                <div className="flex justify-center pt-2">
+                                {/* Action Buttons */}
+                                <div className="flex flex-col sm:flex-row gap-3 justify-center pt-2">
                                     <button
                                         onClick={handleGrabMacroIds}
-                                        disabled={!reportId.trim() || !tabsNum.trim() || isGrabbingMacros}
+                                        disabled={!reportId.trim() || !tabsNum.trim() || isGrabbingMacros || isRetryingMacros || isCheckingMissingPages}
                                         className="px-8 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded-lg font-semibold flex items-center gap-2 transition-colors"
                                     >
                                         {isGrabbingMacros ? (
@@ -184,14 +278,62 @@ const GrabMacroIds = () => {
                                         )}
                                         {isGrabbingMacros ? "Grabbing..." : "Grab Macro IDs"}
                                     </button>
+
+                                    <button
+                                        onClick={handleRetryGrabMacroIds}
+                                        disabled={!reportId.trim() || !tabsNum.trim() || isGrabbingMacros || isRetryingMacros || isCheckingMissingPages}
+                                        className="px-8 py-3 bg-amber-600 hover:bg-amber-700 disabled:bg-gray-400 text-white rounded-lg font-semibold flex items-center gap-2 transition-colors"
+                                    >
+                                        {isRetryingMacros ? (
+                                            <RefreshCw className="w-4 h-4 animate-spin" />
+                                        ) : (
+                                            <RotateCcw className="w-4 h-4" />
+                                        )}
+                                        {isRetryingMacros ? "Retrying..." : "Retry Grab"}
+                                    </button>
+
+                                    <button
+                                        onClick={handleCheckMissingPages}
+                                        disabled={!reportId.trim() || isGrabbingMacros || isRetryingMacros || isCheckingMissingPages}
+                                        className="px-8 py-3 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 text-white rounded-lg font-semibold flex items-center gap-2 transition-colors"
+                                    >
+                                        {isCheckingMissingPages ? (
+                                            <RefreshCw className="w-4 h-4 animate-spin" />
+                                        ) : (
+                                            <Search className="w-4 h-4" />
+                                        )}
+                                        {isCheckingMissingPages ? "Checking..." : "Check Missing Pages"}
+                                    </button>
                                 </div>
 
+                                {/* Error and Missing Pages Info Display */}
                                 {error && (
-                                    <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                                    <div className={`rounded-lg p-4 ${error.includes("No missing pages found") ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
                                         <div className="flex items-center gap-3">
-                                            <FileText className="w-5 h-5 text-red-500" />
-                                            <span className="text-red-700">{error}</span>
+                                            {error.includes("No missing pages found") ? (
+                                                <CheckCircle className="w-5 h-5 text-green-500" />
+                                            ) : (
+                                                <FileText className="w-5 h-5 text-red-500" />
+                                            )}
+                                            <span className={error.includes("No missing pages found") ? "text-green-700" : "text-red-700"}>{error}</span>
                                         </div>
+
+                                        {/* Display missing pages details if available */}
+                                        {missingPagesInfo?.hasMissing && missingPagesInfo.missingPages.length > 0 && (
+                                            <div className="mt-3 pl-8">
+                                                <p className="text-sm font-medium text-gray-700 mb-1">Missing Pages:</p>
+                                                <div className="flex flex-wrap gap-2">
+                                                    {missingPagesInfo.missingPages.map((page, index) => (
+                                                        <span
+                                                            key={index}
+                                                            className="px-3 py-1 bg-red-100 text-red-800 text-sm rounded-full font-medium"
+                                                        >
+                                                            Page {page}
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                 )}
 

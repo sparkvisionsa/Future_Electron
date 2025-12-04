@@ -7,7 +7,7 @@ from scripts.loginFlow.register import register_user
 
 from scripts.submission.validateReport import validate_report
 from scripts.submission.createMacros import run_create_assets
-from scripts.submission.grabMacroIds import get_all_macro_ids_parallel
+from scripts.submission.grabMacroIds import get_all_macro_ids_parallel, retry_get_missing_macro_ids
 from scripts.submission.macroFiller import (
     run_macro_edit, 
     pause_macro_edit, 
@@ -99,6 +99,17 @@ async def handle_command(cmd):
         tabs_num = cmd.get("tabsNum")
 
         result = await get_all_macro_ids_parallel(browser, report_id, tabs_num)
+        result["commandId"] = cmd.get("commandId")
+
+        print(json.dumps(result), flush=True)
+
+    elif action == "retry-macro-ids":
+        browser = await get_browser()
+
+        report_id  = cmd.get("reportId")
+        tabs_num   = cmd.get("tabsNum")
+
+        result = await retry_get_missing_macro_ids(browser, report_id, tabs_num)
         result["commandId"] = cmd.get("commandId")
 
         print(json.dumps(result), flush=True)
