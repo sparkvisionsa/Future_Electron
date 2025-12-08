@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import axios from "axios";
+import ExcelJS from "exceljs/dist/exceljs.min.js";
 
 import {
     FileSpreadsheet,
@@ -27,6 +28,151 @@ const TabButton = ({ active, onClick, children }) => (
     </button>
 );
 
+const normalizeCellValue = (value) => {
+    if (value === null || value === undefined) return "";
+    if (typeof value === "object") {
+        if (value.text !== undefined) return value.text;
+        if (Array.isArray(value.richText)) {
+            return value.richText.map((t) => t.text || "").join("");
+        }
+        if (value.result !== undefined) return value.result;
+        if (value.value !== undefined) return value.value;
+    }
+    return value;
+};
+
+const normalizeKey = (value) =>
+    (value || "")
+        .toString()
+        .trim()
+        .toLowerCase()
+        .replace(/[\W_]+/g, "");
+
+const convertArabicDigits = (value) => {
+    if (typeof value !== "string") return value;
+    const map = {
+        "٠": "0",
+        "١": "1",
+        "٢": "2",
+        "٣": "3",
+        "٤": "4",
+        "٥": "5",
+        "٦": "6",
+        "٧": "7",
+        "٨": "8",
+        "٩": "9",
+    };
+    return value.replace(/[٠-٩]/g, (d) => map[d] ?? d);
+};
+
+const detectValuerColumnsOrThrow = (exampleRow) => {
+    const keys = Object.keys(exampleRow || {});
+    const idKeys = [];
+    const nameKeys = [];
+    const pctKeys = [];
+
+    for (const k of keys) {
+        const base = k.split("_")[0];
+        const lowerBase = base.toLowerCase();
+
+        if (lowerBase === "valuerid") idKeys.push(k);
+        else if (lowerBase === "valuername") nameKeys.push(k);
+        else if (lowerBase === "percentage") pctKeys.push(k);
+    }
+
+    idKeys.sort();
+    nameKeys.sort();
+    pctKeys.sort();
+
+    const hasBaseId = idKeys.some((k) => k.split("_")[0] === "valuerId");
+    const hasBaseName = nameKeys.some((k) => k.split("_")[0] === "valuerName");
+    const hasBasePct = pctKeys.some((k) => k.split("_")[0] === "percentage");
+
+    if (!hasBaseId || !hasBaseName || !hasBasePct) {
+        throw new Error(
+            "Market sheet must contain headers 'valuerId', 'valuerName', and 'percentage' (with optional _1, _2)."
+        );
+    }
+
+    return { idKeys, nameKeys, pctKeys };
+};
+
+const buildValuersForAsset = (assetRow, valuerCols) => {
+    const { idKeys, nameKeys, pctKeys } = valuerCols;
+    const maxLen = Math.max(idKeys.length, nameKeys.length, pctKeys.length);
+    const valuers = [];
+
+    for (let i = 0; i < maxLen; i++) {
+        const idKey = idKeys[i];
+        const nameKey = nameKeys[i];
+        const pctKey = pctKeys[i];
+
+        const rawId = idKey ? assetRow[idKey] : null;
+        const rawName = nameKey ? assetRow[nameKey] : null;
+        const rawPct = pctKey ? assetRow[pctKey] : null;
+
+        const allEmpty =
+            (rawId === null || rawId === "" || rawId === undefined) &&
+            (rawName === null || rawName === "" || rawName === undefined) &&
+            (rawPct === null || rawPct === "" || rawPct === undefined);
+
+        if (allEmpty) continue;
+
+        let pctValue = normalizeCellValue(rawPct);
+        if (typeof pctValue === "string") {
+            pctValue = convertArabicDigits(pctValue)
+                .replace(/[%٪]/g, "")
+                .replace(/,/g, ".")
+                .trim();
+        }
+
+        const pctNum = Number(pctValue);
+        let percentage = 0;
+
+        if (!Number.isNaN(pctNum)) {
+            percentage = pctNum >= 0 && pctNum <= 1 ? pctNum * 100 : pctNum;
+        }
+
+        valuers.push({
+            valuerId: rawId != null && rawId !== "" ? String(rawId) : "",
+            valuerName: rawName != null ? String(rawName) : "",
+            percentage,
+        });
+    }
+
+    return valuers;
+};
+
+const worksheetToObjects = (worksheet) => {
+    const headerRow = worksheet.getRow(1);
+    const headerMap = [];
+    const maxCol = worksheet.columnCount || (headerRow.values.length - 1);
+
+    for (let col = 1; col <= maxCol; col++) {
+        const header = String(
+            normalizeCellValue(headerRow.getCell(col).value) || `col_${col}`
+        )
+            .trim() || `col_${col}`;
+        headerMap[col] = header;
+    }
+
+    const rows = [];
+
+    worksheet.eachRow((row, rowNumber) => {
+        if (rowNumber === 1) return;
+        const obj = {};
+
+        for (let col = 1; col < headerMap.length; col++) {
+            const key = headerMap[col] || `col_${col}`;
+            obj[key] = normalizeCellValue(row.getCell(col).value);
+        }
+
+        rows.push(obj);
+    });
+
+    return rows;
+};
+
 const UploadReportElrajhi = () => {
     const [activeTab, setActiveTab] = useState("no-validation");
     const [excelFile, setExcelFile] = useState(null);
@@ -38,6 +184,16 @@ const UploadReportElrajhi = () => {
     const [sendingTaqeem, setSendingTaqeem] = useState(false);
     const [error, setError] = useState("");
     const [success, setSuccess] = useState("");
+    const [validationFolderFiles, setValidationFolderFiles] = useState([]);
+    const [validationExcelFile, setValidationExcelFile] = useState(null);
+    const [validationPdfFiles, setValidationPdfFiles] = useState([]);
+    const [validationReports, setValidationReports] = useState([]);
+    const [valuationTeam, setValuationTeam] = useState([]);
+    const [marketAssets, setMarketAssets] = useState([]);
+    const [validationMessage, setValidationMessage] = useState(null);
+    const [savingValidation, setSavingValidation] = useState(false);
+    const [sendingValidation, setSendingValidation] = useState(false);
+    const [loadingValuers, setLoadingValuers] = useState(false);
 
     // --- existing helpers (not used in new flow, but kept as requested) ---
     const uploadExcelOnly = async () => {
@@ -63,6 +219,126 @@ const UploadReportElrajhi = () => {
         resetMessages();
         const files = Array.from(e.target.files || []);
         setPdfFiles(files);
+    };
+
+    const parseExcelForValidation = async (excel, pdfList = [], options = {}) => {
+        const { silent = false } = options;
+
+        if (!excel) {
+            setValuationTeam([]);
+            setMarketAssets([]);
+            setValidationReports([]);
+            if (!silent) {
+                setValidationMessage({
+                    type: "error",
+                    text: "Select an Excel file before saving.",
+                });
+            }
+            return null;
+        }
+
+        if (!silent) resetValidationBanner();
+        setLoadingValuers(true);
+        try {
+            const buffer = await excel.arrayBuffer();
+            const workbook = new ExcelJS.Workbook();
+            await workbook.xlsx.load(buffer);
+
+            const marketSheet = workbook.getWorksheet("market");
+            if (!marketSheet) {
+                throw new Error("Excel must include a sheet named 'market'.");
+            }
+
+            const marketRows = worksheetToObjects(marketSheet);
+            if (!marketRows.length) {
+                throw new Error("Sheet 'market' has no rows to read valuers from.");
+            }
+
+            const valuerCols = detectValuerColumnsOrThrow(marketRows[0]);
+
+            const pdfMap = {};
+            pdfList.forEach((file) => {
+                const base = file.name.replace(/\.pdf$/i, "");
+                pdfMap[normalizeKey(base)] = file.name;
+            });
+
+            const assets = [];
+
+            for (let i = 0; i < marketRows.length; i++) {
+                const row = marketRows[i];
+                if (!row.asset_name) continue;
+
+                const valuers = buildValuersForAsset(row, valuerCols);
+                if (!valuers.length) {
+                    throw new Error(
+                        `Asset "${row.asset_name}" (row ${i + 2}) has no valuers.`
+                    );
+                }
+
+                const total = valuers.reduce(
+                    (sum, v) => sum + Number(v.percentage || 0),
+                    0
+                );
+                const roundedTotal = Math.round(total * 100) / 100;
+
+                if (Math.abs(roundedTotal - 100) > 0.001) {
+                    throw new Error(
+                        `Asset "${row.asset_name}" (row ${i + 2}) valuers total ${roundedTotal}%. Must be 100%.`
+                    );
+                }
+
+                const pdf_name = pdfMap[normalizeKey(row.asset_name)] || null;
+
+                assets.push({
+                    asset_name: row.asset_name,
+                    client_name: row.client_name || row.owner_name || "",
+                    pdf_name,
+                    valuers,
+                    totalPercentage: roundedTotal,
+                });
+            }
+
+            if (!assets.length) {
+                throw new Error("No assets with asset_name found in 'market' sheet.");
+            }
+
+            const reports = assets.map((asset, idx) => ({
+                id: `${asset.asset_name}-${idx}`,
+                asset_name: asset.asset_name,
+                client_name: asset.client_name || "Pending client",
+                pdf_name: asset.pdf_name,
+                valuers: asset.valuers,
+                totalPercentage: asset.totalPercentage,
+            }));
+
+            setValuationTeam(assets[0].valuers);
+            setMarketAssets(assets);
+            setValidationReports(reports);
+
+            const matchedCount = reports.filter((r) => !!r.pdf_name).length;
+
+            if (!silent) {
+                setValidationMessage({
+                    type: "success",
+                    text: `Loaded ${assets.length} asset(s). Matched ${matchedCount} PDF(s) by asset name.`,
+                });
+            }
+
+            return { assets, matchedCount };
+        } catch (err) {
+            setValuationTeam([]);
+            setMarketAssets([]);
+            setValidationReports([]);
+            if (!silent) {
+                setValidationMessage({
+                    type: "error",
+                    text: err.message || "Failed to read valuers from Excel.",
+                });
+            }
+            return null;
+        } finally {
+            setLoadingValuers(false);
+        }
     };
 
     const sendToTaqeem = async () => {
@@ -138,6 +414,161 @@ const UploadReportElrajhi = () => {
             setError(msg);
         } finally {
             setSendingTaqeem(false);
+        }
+    };
+
+    const resetValidationBanner = () => setValidationMessage(null);
+
+    const handleValidationFolderChange = (e) => {
+        resetValidationBanner();
+        const incomingFiles = Array.from(e.target.files || []);
+        setValidationFolderFiles(incomingFiles);
+        const excel = incomingFiles.find((file) => /\.(xlsx|xls)$/i.test(file.name));
+        const pdfList = incomingFiles.filter((file) => /\.pdf$/i.test(file.name));
+        setValidationExcelFile(excel || null);
+        setValidationPdfFiles(pdfList);
+        // Parsing will run when user clicks "Save folder for validation"
+    };
+
+    const totalContribution = valuationTeam.reduce(
+        (sum, member) =>
+            sum + Number(member.percentage ?? member.contribution ?? 0),
+        0
+    );
+    const roundedContribution = Math.round(totalContribution * 100) / 100;
+    const contributionIsComplete = Math.abs(roundedContribution - 100) < 0.001;
+    const allAssetsTotalsValid = marketAssets.every(
+        (a) => Math.abs((a.totalPercentage || 0) - 100) < 0.001
+    );
+
+    const resetValidationSection = () => {
+        setValidationFolderFiles([]);
+        setValidationExcelFile(null);
+        setValidationPdfFiles([]);
+        setValidationReports([]);
+        setValidationMessage(null);
+        setValuationTeam([]);
+        setMarketAssets([]);
+    };
+
+    const registerValidationFolder = async () => {
+        resetValidationBanner();
+
+        if (!validationFolderFiles.length) {
+            setValidationMessage({
+                type: "error",
+                text: "Select a folder that includes Excel and PDF files.",
+            });
+            return;
+        }
+        if (!validationExcelFile) {
+            setValidationMessage({
+                type: "error",
+                text: "The folder must include at least one Excel file for report info.",
+            });
+            return;
+        }
+        if (!validationPdfFiles.length) {
+            setValidationMessage({
+                type: "error",
+                text: "Add at least one PDF in the folder to continue.",
+            });
+            return;
+        }
+
+        setSavingValidation(true);
+        try {
+            const parseResult = await parseExcelForValidation(
+                validationExcelFile,
+                validationPdfFiles,
+                { silent: false }
+            );
+
+            if (!parseResult) return;
+
+            const { assets, matchedCount } = parseResult;
+
+            if (!assets.length) {
+                setValidationMessage({
+                    type: "error",
+                    text: "No assets found in the Excel file.",
+                });
+                return;
+            }
+
+            if (!valuationTeam.length || !contributionIsComplete || !allAssetsTotalsValid) {
+                setValidationMessage({
+                    type: "error",
+                    text: "Valuer percentages must total 100% for every asset before saving.",
+                });
+                return;
+            }
+
+            setValidationMessage({
+                type: "success",
+                text: `Folder staged. Found ${assets.length} asset(s) and ${validationPdfFiles.length} PDF(s). Matched ${matchedCount} PDF(s) by asset name.`,
+            });
+        } finally {
+            setSavingValidation(false);
+        }
+    };
+
+    const guardBeforeSend = () => {
+        if (!valuationTeam.length || !allAssetsTotalsValid) {
+            setValidationMessage({
+                type: "error",
+                text: "No valuers detected or totals are not 100% for all assets.",
+            });
+            return false;
+        }
+        if (!contributionIsComplete) {
+            setValidationMessage({
+                type: "error",
+                text: "Contribution total must equal 100% before sending to Taqeem.",
+            });
+            return false;
+        }
+        if (!validationReports.length) {
+            setValidationMessage({
+                type: "error",
+                text: "Save the folder first so reports are available to send.",
+            });
+            return false;
+        }
+        return true;
+    };
+
+    const sendAllReportsToTaqeem = async () => {
+        if (!guardBeforeSend()) return;
+        setSendingValidation(true);
+        try {
+            setValidationMessage({
+                type: "success",
+                text: "Ready to send all reports to Taqeem. Wire this button to the backend when available.",
+            });
+        } finally {
+            setSendingValidation(false);
+        }
+    };
+
+    const sendOnlyPdfReportsToTaqeem = async () => {
+        if (!guardBeforeSend()) return;
+        const withPdf = validationReports.filter((report) => report.pdf_name);
+        if (!withPdf.length) {
+            setValidationMessage({
+                type: "error",
+                text: "No PDF files found to send.",
+            });
+            return;
+        }
+        setSendingValidation(true);
+        try {
+            setValidationMessage({
+                type: "success",
+                text: "Ready to send only reports that include PDFs. Hook navigation to Taqeem home here.",
+            });
+        } finally {
+            setSendingValidation(false);
         }
     };
 
@@ -336,12 +767,310 @@ const UploadReportElrajhi = () => {
     );
 
     const validationContent = (
-        <div className="bg-white border rounded-lg p-6 shadow-sm text-sm text-gray-600">
-            <p className="font-semibold text-gray-800 mb-2">Validation tab</p>
-            <p>
-                This space is reserved for the upcoming validation workflow. For now,
-                use the "No validation" tab to exercise the new backend endpoints.
-            </p>
+        <div className="space-y-5">
+            {validationMessage && (
+                <div
+                    className={`rounded-lg p-3 flex items-start gap-2 ${validationMessage.type === "error"
+                        ? "bg-red-50 text-red-700 border border-red-100"
+                        : "bg-emerald-50 text-emerald-700 border border-emerald-100"
+                        }`}
+                >
+                    {validationMessage.type === "error" ? (
+                        <AlertTriangle className="w-4 h-4 mt-0.5" />
+                    ) : (
+                        <CheckCircle2 className="w-4 h-4 mt-0.5" />
+                    )}
+                    <div className="text-sm">{validationMessage.text}</div>
+                </div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="p-4 border border-gray-200 rounded-lg bg-white shadow-sm space-y-3">
+                    <div className="flex items-center gap-2">
+                        <Upload className="w-5 h-5 text-blue-600" />
+                        <div>
+                            <p className="text-sm font-semibold text-gray-900">
+                                Upload folder (Excel + PDFs)
+                            </p>
+                            <p className="text-xs text-gray-500">
+                                Choose the folder that contains the Excel report file and all related PDFs.
+                            </p>
+                        </div>
+                    </div>
+                    <label className="flex items-center justify-between px-3 py-2 bg-gray-50 border border-gray-200 rounded cursor-pointer hover:bg-gray-100">
+                        <div className="flex items-center gap-2 text-sm text-gray-700">
+                            <FolderOpen className="w-4 h-4" />
+                            <span>
+                                {validationFolderFiles.length
+                                    ? `${validationFolderFiles.length} file(s) in folder`
+                                    : "Pick a folder"}
+                            </span>
+                        </div>
+                        <input
+                            type="file"
+                            multiple
+                            webkitdirectory="true"
+                            directory="true"
+                            accept=".xlsx,.xls,.pdf"
+                            className="hidden"
+                            onChange={handleValidationFolderChange}
+                        />
+                        <span className="text-xs text-blue-600">Browse</span>
+                    </label>
+                    <div className="grid grid-cols-2 gap-2 text-xs text-gray-600">
+                        <div className="p-2 rounded bg-gray-50 border border-gray-100">
+                            <p className="font-semibold text-gray-800">Excel detected</p>
+                            <p>{validationExcelFile ? validationExcelFile.name : "—"}</p>
+                        </div>
+                        <div className="p-2 rounded bg-gray-50 border border-gray-100">
+                            <p className="font-semibold text-gray-800">PDFs detected</p>
+                            <p>{validationPdfFiles.length} file(s)</p>
+                        </div>
+                    </div>
+                    <div className="flex gap-2">
+                        <button
+                            type="button"
+                            onClick={registerValidationFolder}
+                            disabled={savingValidation || loadingValuers}
+                            className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
+                        >
+                            {(savingValidation || loadingValuers) ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                                <Upload className="w-4 h-4" />
+                            )}
+                            Save folder for validation
+                        </button>
+                        <button
+                            type="button"
+                            onClick={resetValidationSection}
+                            className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-gray-100 text-gray-700 text-sm hover:bg-gray-200"
+                        >
+                            <RefreshCw className="w-4 h-4" />
+                            Reset
+                        </button>
+                    </div>
+                </div>
+
+                <div className="p-4 border border-gray-200 rounded-lg bg-white shadow-sm space-y-3">
+                    <div className="flex items-center gap-2">
+                        <Info className="w-5 h-5 text-emerald-600" />
+                        <div>
+                            <p className="text-sm font-semibold text-gray-900">
+                                Valuer contributions
+                            </p>
+                            <p className="text-xs text-gray-500">
+                                Pulled from the Excel &quot;market&quot; sheet. Each asset row must have valuers totaling 100%. Showing the first asset&rsquo;s valuers below.
+                            </p>
+                            {marketAssets.length > 1 && (
+                                <p className="text-[11px] text-gray-500">
+                                    All {marketAssets.length} assets were validated for valuers and totals.
+                                </p>
+                            )}
+                        </div>
+                    </div>
+                    <div className="overflow-x-auto">
+                        <table className="min-w-full text-sm">
+                            <thead className="bg-gray-50 text-gray-600">
+                                <tr>
+                                    <th className="px-3 py-2 text-left">Valuer ID</th>
+                                    <th className="px-3 py-2 text-left">Valuer Name</th>
+                                    <th className="px-3 py-2 text-left">Contribution (%)</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {valuationTeam.map((member, idx) => (
+                                    <tr key={`${member.valuerId || member.valuerName}-${idx}`} className="border-t">
+                                        <td className="px-3 py-2 text-gray-900 font-medium">
+                                            {member.valuerId || "—"}
+                                        </td>
+                                        <td className="px-3 py-2 text-gray-800">
+                                            {member.valuerName || "—"}
+                                        </td>
+                                        <td className="px-3 py-2 text-right text-gray-800">
+                                            {Number(member.percentage ?? 0)}
+                                        </td>
+                                    </tr>
+                                ))}
+                                <tr className="bg-gray-50 border-t">
+                                    <td className="px-3 py-2 font-semibold text-gray-800">
+                                        Total
+                                    </td>
+                                    <td className="px-3 py-2 font-semibold text-right" colSpan={2}>
+                                        <span
+                                            className={`${contributionIsComplete
+                                                ? "text-emerald-600"
+                                                : "text-red-600"
+                                                }`}
+                                        >
+                                            {roundedContribution}%
+                                        </span>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    {loadingValuers && (
+                        <div className="flex items-center gap-2 text-xs text-gray-600">
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Reading valuers from Excel...
+                        </div>
+                    )}
+                    {!loadingValuers && !valuationTeam.length && (
+                        <div className="flex items-center gap-2 text-xs text-gray-500">
+                            <Info className="w-4 h-4" />
+                            Select a folder with an Excel file to load valuers.
+                        </div>
+                    )}
+                    {!loadingValuers && valuationTeam.length > 0 && (!contributionIsComplete || !allAssetsTotalsValid) && (
+                        <div className="flex items-center gap-2 text-xs text-red-600">
+                            <AlertTriangle className="w-4 h-4" />
+                            Every asset row must total 100% to enable sending to Taqeem.
+                        </div>
+                    )}
+                    {!loadingValuers && valuationTeam.length > 0 && contributionIsComplete && allAssetsTotalsValid && (
+                        <div className="flex items-center gap-2 text-xs text-emerald-600">
+                            <CheckCircle2 className="w-4 h-4" />
+                            Contributions are balanced. You can proceed to send.
+                        </div>
+                    )}
+                </div>
+            </div>
+
+                <div className="bg-white border border-gray-200 rounded-lg shadow-sm">
+                    <div className="px-4 py-3 border-b flex items-center gap-2">
+                        <Files className="w-5 h-5 text-blue-600" />
+                        <div>
+                            <p className="text-sm font-semibold text-gray-900">
+                                Reports staged from folder
+                            </p>
+                            <p className="text-xs text-gray-500">
+                            After the folder is saved to the database, PDFs will appear here with asset and client info.
+                            </p>
+                        </div>
+                    </div>
+                    {validationReports.length ? (
+                        <div className="overflow-x-auto">
+                        <table className="min-w-full text-sm">
+                            <thead className="bg-gray-50 text-gray-600">
+                                <tr>
+                                    <th className="px-4 py-2 text-left">#</th>
+                                    <th className="px-4 py-2 text-left">PDF file</th>
+                                    <th className="px-4 py-2 text-left">Asset name</th>
+                                    <th className="px-4 py-2 text-left">Client name</th>
+                                    <th className="px-4 py-2 text-left">Valuers (ID / Name / %)</th>
+                                    <th className="px-4 py-2 text-left">Total %</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {validationReports.map((report, idx) => (
+                                    <tr key={report.id} className="border-t">
+                                        <td className="px-4 py-2 text-gray-700">
+                                            {idx + 1}
+                                        </td>
+                                        <td className="px-4 py-2 text-gray-900 font-medium">
+                                            {report.pdf_name ? (
+                                                <span className="inline-flex items-center gap-2 text-emerald-700">
+                                                    <FileIcon className="w-4 h-4" />
+                                                    {report.pdf_name}
+                                                </span>
+                                            ) : (
+                                                <span className="text-gray-500">
+                                                    No matching PDF
+                                                </span>
+                                            )}
+                                        </td>
+                                        <td className="px-4 py-2 text-gray-800">
+                                            {report.asset_name}
+                                        </td>
+                                        <td className="px-4 py-2 text-gray-800">
+                                            {report.client_name}
+                                        </td>
+                                        <td className="px-4 py-2 text-gray-800">
+                                            <div className="flex flex-wrap gap-1 text-xs">
+                                                {(report.valuers || []).map((v, vIdx) => (
+                                                    <span
+                                                        key={`${report.id}-valuer-${vIdx}`}
+                                                        className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-1 border border-gray-200"
+                                                    >
+                                                        <span className="font-semibold text-gray-700">
+                                                            {v.valuerId || "—"}
+                                                        </span>
+                                                        <span className="text-gray-600">
+                                                            {v.valuerName || "—"}
+                                                        </span>
+                                                        <span className="text-gray-700">
+                                                            ({Number(v.percentage ?? 0)}%)
+                                                        </span>
+                                                    </span>
+                                                ))}
+                                            </div>
+                                        </td>
+                                        <td className="px-4 py-2 text-gray-900 font-semibold">
+                                            {report.totalPercentage ?? 0}%
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                ) : (
+                    <div className="px-4 py-3 text-sm text-gray-500 flex items-center gap-2">
+                        <Info className="w-4 h-4" />
+                        Save a folder to preview the PDF files, assets, and client names.
+                    </div>
+                )}
+            </div>
+
+            <div className="bg-white border border-gray-200 rounded-lg shadow-sm p-4 space-y-3">
+                <div className="flex items-center gap-2">
+                    <Send className="w-5 h-5 text-emerald-600" />
+                    <div>
+                        <p className="text-sm font-semibold text-gray-900">Send to Taqeem</p>
+                        <p className="text-xs text-gray-500">
+                            Total contributions must equal 100%. Hook the buttons to the Taqeem integration when ready.
+                        </p>
+                    </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                    <button
+                        type="button"
+                        onClick={sendAllReportsToTaqeem}
+                        disabled={
+                            sendingValidation ||
+                            !valuationTeam.length ||
+                            !contributionIsComplete ||
+                            !validationReports.length
+                        }
+                        className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50"
+                    >
+                        {sendingValidation ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                            <Send className="w-4 h-4" />
+                        )}
+                        Send all reports to Taqeem
+                    </button>
+                    <button
+                        type="button"
+                        onClick={sendOnlyPdfReportsToTaqeem}
+                        disabled={
+                            sendingValidation ||
+                            !valuationTeam.length ||
+                            !contributionIsComplete ||
+                            !validationReports.length
+                        }
+                        className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
+                    >
+                        {sendingValidation ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                            <Files className="w-4 h-4" />
+                        )}
+                        Send only reports with PDFs
+                    </button>
+                </div>
+            </div>
         </div>
     );
 
@@ -353,7 +1082,7 @@ const UploadReportElrajhi = () => {
                         Upload Report Elrajhi
                     </h2>
                     <p className="text-sm text-gray-600 mt-1">
-                        Test the no-validation flow: Excel ingestion and PDF linking.
+                        Choose a flow: quick upload without validation or the new validation tab with folder upload, valuers, and Taqeem actions.
                     </p>
                 </div>
                 <div className="flex gap-2">
