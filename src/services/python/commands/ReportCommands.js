@@ -82,6 +82,14 @@ class ReportCommands {
         });
     }
 
+    async createReportsByBatch(batchId, tabsNum) {
+        return this._sendCommand({
+            action: 'create-reports-by-batch',
+            batchId,
+            tabsNum
+        });
+    }
+
     async fullCheck(reportId, tabsNum) {
         return this._sendCommand({
             action: 'full-check',

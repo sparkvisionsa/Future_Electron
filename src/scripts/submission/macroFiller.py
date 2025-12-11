@@ -83,11 +83,7 @@ async def fill_macro_form(page, macro_id, macro_data, field_map, field_types):
         print(f"Filling macro {macro_id} failed: {e}", file=sys.stderr)
         return {"status": "FAILED", "error": str(e)}
 
-async def handle_macro_edits(browser, record, tabs_num=3, record_id=None):
-    """
-    Edit macros in parallel using multiple tabs with pause/resume support
-    Expects asset_data to already have 'id' field populated for each asset
-    """    
+async def handle_macro_edits(browser, record, tabs_num=3, record_id=None): 
     asset_data = record.get("asset_data", [])
     if not asset_data: 
         return {"status": "SUCCESS", "message": "No assets to edit"}
@@ -167,7 +163,6 @@ async def handle_macro_edits(browser, record, tabs_num=3, record_id=None):
                     asset,
                     macro_form_config["field_map"],
                     macro_form_config["field_types"],
-                    record_id
                 )
                 
                 async with completed_lock:

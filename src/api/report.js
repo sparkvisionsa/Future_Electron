@@ -44,6 +44,42 @@ const uploadElrajhiBatch = async (validationExcelFile, validationPdfFiles) => {
     return response.data;
 };
 
+const multiExcelUpload = async (validationExcelFiles, validationPdfFiles) => {
+    const formData = new FormData();
+    validationExcelFiles.forEach((file) => {
+        formData.append("excels", file);
+    });
+    validationPdfFiles.forEach((file) => {
+        formData.append("pdfs", file);
+    });
+
+    const response = await httpClient.post(
+        "/multi-approach",
+        formData,
+        {
+            headers: {
+                "Content-Type": "multipart/form-data",
+            },
+        }
+    );
+    return response.data;
+};
+
+const fetchLatestUserReport = async () => {
+    const url = `/duplicate-report/latest`;
+    const response = await httpClient.get(url);
+    return response.data;
+};
+
+const createDuplicateReport = async (payload) => {
+    const url = `/duplicate-report`;
+    const response = await httpClient.post(url, payload, {
+        headers: {
+            "Content-Type": "multipart/form-data",
+        },
+    });
+    return response.data;
+}
 
 
 module.exports = {
@@ -52,18 +88,7 @@ module.exports = {
     addCommonFields,
     checkMissingPages,
     uploadElrajhiBatch,
-    fetchLatestUserReport: async () => {
-        const url = `/duplicate-report/latest`;
-        const response = await httpClient.get(url);
-        return response.data;
-    },
-    createDuplicateReport: async (payload) => {
-        const url = `/duplicate-report`;
-        const response = await httpClient.post(url, payload, {
-            headers: {
-                "Content-Type": "multipart/form-data",
-            },
-        });
-        return response.data;
-    }
+    multiExcelUpload,
+    fetchLatestUserReport,
+    createDuplicateReport
 };

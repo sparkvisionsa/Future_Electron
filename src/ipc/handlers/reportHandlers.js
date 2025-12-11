@@ -97,6 +97,15 @@ const reportHandlers = {
         }
     },
 
+    async handleCreateReportsByBatch(event, batchId, tabsNum) {
+        try {
+            return await pythonAPI.report.createReportsByBatch(batchId, tabsNum);
+        } catch (err) {
+            console.error('[MAIN] Create reports by batch error:', err && err.stack ? err.stack : err);
+            return { status: 'FAILED', error: err.message || String(err) };
+        }
+    },
+
     async handleGrabMacroIds(event, reportId, tabsNum) {
         try {
             return await pythonAPI.report.grabMacroIds(reportId, tabsNum);

@@ -8,6 +8,7 @@ import {
     FileSpreadsheet,
     ClipboardList,
     ListChecks,
+    File,
     Edit3,
     CircleDot,
     CompassIcon,
@@ -45,7 +46,11 @@ const Sidebar = ({ currentView, onViewChange }) => {
         { id: 'get-companies', label: 'Get Companies', icon: CompassIcon },
         { id: 'packages', label: 'Packages', icon: Package },
         { id: 'upload-report-elrajhi', label: 'Upload Report Elrajhi', icon: UploadCloud },
+<<<<<<< HEAD
         { id: 'duplicate-report', label: 'Duplicate report & send new', icon: Files },
+=======
+        { id: 'multi-excel-upload', label: 'Multi-Excel Upload', icon: File },
+>>>>>>> 61fafd9 (midway)
     ];
 
     if (isCompanyHead) {

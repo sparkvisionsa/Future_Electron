@@ -22,7 +22,11 @@ function registerIpcHandlers() {
     ipcMain.handle('retry-macro-ids', reportHandlers.handleRetryMacroIds);
     ipcMain.handle('macro-fill', reportHandlers.handleMacroFill);
     ipcMain.handle('elrajhi-filler', reportHandlers.handleElRajhiUploadReport);
+<<<<<<< HEAD
     ipcMain.handle('duplicate-report', reportHandlers.handleDuplicateReport);
+=======
+    ipcMain.handle('create-reports-by-batch', reportHandlers.handleCreateReportsByBatch);
+>>>>>>> 61fafd9 (midway)
 
     ipcMain.handle('pause-macro-fill', reportHandlers.handlePauseMacroFill);
     ipcMain.handle('resume-macro-fill', reportHandlers.handleResumeMacroFill);
@@ -77,7 +81,11 @@ function unregisterIpcHandlers() {
     ipcMain.removeAllListeners('retry-macro-ids');
     ipcMain.removeAllListeners('macro-fill');
     ipcMain.removeAllListeners('elrajhi-filler');
+<<<<<<< HEAD
     ipcMain.removeAllListeners('duplicate-report');
+=======
+    ipcMain.removeAllListeners('create-reports-by-batch');
+>>>>>>> 61fafd9 (midway)
 
     ipcMain.removeAllListeners('pause-macro-fill');
     ipcMain.removeAllListeners('resume-macro-fill');

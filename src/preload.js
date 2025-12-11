@@ -50,6 +50,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     macroFill: (reportId, tabsNum) => safeInvoke('macro-fill', reportId, tabsNum),
     elrajhiUploadReport: (batchId, tabsNum, pdfOnly, finalizeSubmission = true) => safeInvoke('elrajhi-filler', batchId, tabsNum, pdfOnly, finalizeSubmission),
     duplicateReportNavigate: (recordId, company) => safeInvoke('duplicate-report', recordId, company),
+    elrajhiUploadReport: (batchId, tabsNum, pdfOnly) => safeInvoke('elrajhi-filler', batchId, tabsNum, pdfOnly),
+    createReportsByBatch: (batchId, tabsNum) => safeInvoke('create-reports-by-batch', batchId, tabsNum),
 
     // Pause/Resume/Stop controls
     pauseMacroFill: (reportId) => safeInvoke('pause-macro-fill', reportId),
@@ -62,6 +64,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     deleteReport: (reportId, maxRounds) => safeInvoke('delete-report', reportId, maxRounds),
     deleteIncompleteAssets: (reportId, maxRounds) => safeInvoke('delete-incomplete-assets', reportId, maxRounds),
     handleCancelledReport: (reportId) => safeInvoke('handle-cancelled-report', reportId),
+
 
 
     getToken: () => safeInvoke('get-token'),

@@ -15,7 +15,11 @@ from scripts.submission.macroFiller import (
     stop_macro_edit
 )
 from scripts.submission.ElRajhiFiller import ElRajhiFiller
+<<<<<<< HEAD
 from scripts.submission.duplicateReport import run_duplicate_report
+=======
+from scripts.submission.mutliReportFiller import create_reports_by_batch
+>>>>>>> 61fafd9 (midway)
 
 from scripts.submission.checkMacroStatus import RunCheckMacroStatus, RunHalfCheckMacroStatus
 
@@ -249,6 +253,17 @@ async def handle_command(cmd):
         company = cmd.get("company") or cmd.get("url")
 
         result = await navigate_to_company(browser, company)
+        result["commandId"] = cmd.get("commandId")
+
+        print(json.dumps(result), flush=True)
+
+    elif action == "create-reports-by-batch":
+        browser = await get_browser()
+
+        batch_id = cmd.get("batchId")
+        tabs_num = int(cmd.get("tabsNum", 3))
+
+        result = await create_reports_by_batch(browser, batch_id, tabs_num)
         result["commandId"] = cmd.get("commandId")
 
         print(json.dumps(result), flush=True)
