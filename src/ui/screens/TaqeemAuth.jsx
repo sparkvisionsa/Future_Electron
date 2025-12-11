@@ -1,15 +1,24 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { useNavStatus } from '../context/NavStatusContext';
+import usePersistentState from "../hooks/usePersistentState";
 
 const TaqeemAuth = ({ onViewChange }) => {
-    const [formData, setFormData] = useState({
+    const [formData, setFormData, resetFormData] = usePersistentState('taqeem-auth:form', {
         email: '',
         password: '',
         otp: '',
         method: 'EMAIL' // Default method
-    });
-    const [showOtp, setShowOtp] = useState(false);
+    }, { storage: 'session' });
+    const [showOtp, setShowOtp, resetShowOtp] = usePersistentState('taqeem-auth:showOtp', false, { storage: 'session' });
     const [isLoading, setIsLoading] = useState(false);
-    const [message, setMessage] = useState({ text: '', type: '' });
+    const [message, setMessage, resetMessage] = usePersistentState('taqeem-auth:message', { text: '', type: '' }, { storage: 'session' });
+    const { taqeemStatus, setTaqeemStatus } = useNavStatus();
+
+    useEffect(() => {
+        if (taqeemStatus?.state !== 'success') {
+            setTaqeemStatus('info', 'Taqeem login is required to proceed');
+        }
+    }, [setTaqeemStatus, taqeemStatus?.state]);
 
     const goToCompanies = () => {
         if (onViewChange) {
@@ -19,12 +28,15 @@ const TaqeemAuth = ({ onViewChange }) => {
     };
 
     const handleInputChange = (e) => {
-        const { name, value, type, checked } = e.target;
-        setFormData(prev => ({
-            ...prev,
-            [name]: type === 'checkbox' ? (checked ? 'SMS' : 'EMAIL') : value
-        }));
-    };
+            const { name, value, type, checked } = e.target;
+            setFormData(prev => ({
+                ...prev,
+                [name]: type === 'checkbox' ? (checked ? 'SMS' : 'EMAIL') : value
+            }));
+            if (name === 'otp' && message?.text) {
+                setMessage((prev) => ({ ...prev, text: '' }));
+            }
+        };
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -55,11 +67,13 @@ const TaqeemAuth = ({ onViewChange }) => {
                             text: result.message || `Two-factor authentication required. Please enter your ${formData.method === 'SMS' ? 'SMS' : 'email'} code.`,
                             type: 'info'
                         });
+                        setTaqeemStatus('info', 'Awaiting OTP to finish Taqeem sign-in');
                     } else if (result.status === 'SUCCESS') {
                         setMessage({
                             text: result.message || '✅ Login successful! Starting automation...',
                             type: 'success'
                         });
+                        setTaqeemStatus('success', 'Taqeem login completed');
                         goToCompanies();
                     } else {
                         throw new Error(result.error || 'Login failed');
@@ -81,6 +95,7 @@ const TaqeemAuth = ({ onViewChange }) => {
                             text: result.message || '✅ Authentication complete! Automation running...',
                             type: 'success'
                         });
+                        setTaqeemStatus('success', 'Taqeem login completed');
                         goToCompanies();
                     } else {
                         throw new Error(result.error || 'OTP verification failed');
@@ -94,15 +109,17 @@ const TaqeemAuth = ({ onViewChange }) => {
                 text: '❌ Error: ' + error.message,
                 type: 'error'
             });
+            setTaqeemStatus('error', error.message || 'Taqeem login failed');
         } finally {
             setIsLoading(false);
         }
     };
 
     const handleReset = () => {
-        setFormData({ email: '', password: '', otp: '', method: 'EMAIL' });
-        setShowOtp(false);
-        setMessage({ text: '', type: '' });
+        resetFormData();
+        resetShowOtp();
+        resetMessage();
+        setTaqeemStatus('info', 'Taqeem login is required to proceed');
     };
 
     const getMessageStyles = (type) => {
@@ -122,6 +139,25 @@ const TaqeemAuth = ({ onViewChange }) => {
     return (
         <div className="max-w-md w-full mx-auto py-8">
             <div className="bg-white rounded-xl shadow-lg p-6">
+                {taqeemStatus?.state === 'success' && (
+                    <div className="mb-4 rounded-lg border border-green-200 bg-gradient-to-r from-green-50 to-emerald-100 p-4 text-green-900 flex items-start gap-3">
+                        <div className="mt-0.5">
+                            <svg className="w-5 h-5 text-green-600" viewBox="0 0 20 20" fill="currentColor">
+                                <path fillRule="evenodd" d="M16.707 5.293a1 1 0 00-1.414-1.414L8 11.172 4.707 7.879A1 1 0 003.293 9.293l4 4a1 1 0 001.414 0l8-8z" clipRule="evenodd" />
+                            </svg>
+                        </div>
+                        <div className="flex-1">
+                            <p className="font-semibold text-green-900">You are already logged in to Taqeem</p>
+                            <p className="text-sm text-green-800">Move straight to selecting companies or keep this form for re-authentication.</p>
+                        </div>
+                        <button
+                            onClick={() => onViewChange && onViewChange('get-companies')}
+                            className="text-sm font-semibold text-green-900 bg-white border border-green-200 px-3 py-2 rounded-lg hover:bg-green-100"
+                        >
+                            Go to companies
+                        </button>
+                    </div>
+                )}
                 <form onSubmit={handleSubmit} className="space-y-6">
                     {/* Email Field */}
                     <div>

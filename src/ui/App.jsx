@@ -4,6 +4,8 @@ import './index.css'; // Add this line
 import Layout from './components/Layout';
 import { SessionProvider, useSession } from './context/SessionContext';
 import { SystemControlProvider } from './context/SystemControlContext';
+import { NavStatusProvider } from './context/NavStatusContext';
+import { ElrajhiUploadProvider } from './context/ElrajhiUploadContext';
 
 import Registration from './screens/Registration';
 import LoginForm from './screens/LoginForm';
@@ -120,7 +122,11 @@ const App = () => {
     return (
         <SessionProvider>
             <SystemControlProvider>
-                <AppContent />
+                <NavStatusProvider>
+                    <ElrajhiUploadProvider>
+                        <AppContent />
+                    </ElrajhiUploadProvider>
+                </NavStatusProvider>
             </SystemControlProvider>
         </SessionProvider>
     );

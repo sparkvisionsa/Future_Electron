@@ -2,6 +2,9 @@ import React, { useState } from "react";
 import axios from "axios";
 import ExcelJS from "exceljs/dist/exceljs.min.js";
 import { uploadElrajhiBatch } from "../../api/report";
+import httpClient from "../../api/httpClient";
+import usePersistentState from "../hooks/usePersistentState";
+import { useElrajhiUpload } from "../context/ElrajhiUploadContext";
 
 import {
     FileSpreadsheet,
@@ -15,6 +18,7 @@ import {
     FolderOpen,
     Info,
     Send,
+    Download,
 } from "lucide-react";
 
 const TabButton = ({ active, onClick, children }) => (
@@ -225,27 +229,47 @@ const worksheetToObjects = (worksheet) => {
 };
 
 const UploadReportElrajhi = () => {
-    const [activeTab, setActiveTab] = useState("no-validation");
-    const [excelFile, setExcelFile] = useState(null);
-    const [numTabs, setNumTabs] = useState(1);
-    const [pdfFiles, setPdfFiles] = useState([]);
-    const [batchId, setBatchId] = useState("");
-    const [excelResult, setExcelResult] = useState(null);
+    const {
+        activeTab,
+        setActiveTab,
+        excelFile,
+        setExcelFile,
+        pdfFiles,
+        setPdfFiles,
+        validationFolderFiles,
+        setValidationFolderFiles,
+        validationExcelFile,
+        setValidationExcelFile,
+        validationPdfFiles,
+        setValidationPdfFiles,
+        resetAllFiles,
+    } = useElrajhiUpload();
+
+    const [numTabs, setNumTabs] = usePersistentState("elrajhi:numTabs", 1, { storage: 'session' });
+    const [batchId, setBatchId, resetBatchId] = usePersistentState("elrajhi:batchId", "");
+    const [excelResult, setExcelResult, resetExcelResult] = usePersistentState("elrajhi:excelResult", null);
+    const [downloadPath, setDownloadPath, resetDownloadPath] = usePersistentState("elrajhi:downloadPath", null);
+    const [downloadingExcel, setDownloadingExcel] = useState(false);
     const [loadingExcel, setLoadingExcel] = useState(false);
     const [loadingPdf, setLoadingPdf] = useState(false);
     const [sendingTaqeem, setSendingTaqeem] = useState(false);
-    const [error, setError] = useState("");
-    const [success, setSuccess] = useState("");
-    const [validationFolderFiles, setValidationFolderFiles] = useState([]);
-    const [validationExcelFile, setValidationExcelFile] = useState(null);
-    const [validationPdfFiles, setValidationPdfFiles] = useState([]);
-    const [validationReports, setValidationReports] = useState([]);
-    const [marketAssets, setMarketAssets] = useState([]);
-    const [validationMessage, setValidationMessage] = useState(null);
+    const [error, setError] = usePersistentState("elrajhi:error", "");
+    const [success, setSuccess] = usePersistentState("elrajhi:success", "");
+    const [validationReports, setValidationReports, resetValidationReports] = usePersistentState("elrajhi:validationReports", []);
+    const [marketAssets, setMarketAssets, resetMarketAssets] = usePersistentState("elrajhi:marketAssets", []);
+    const [validationMessage, setValidationMessage, resetValidationMessage] = usePersistentState("elrajhi:validationMessage", null);
     const [savingValidation, setSavingValidation] = useState(false);
     const [sendingValidation, setSendingValidation] = useState(false);
     const [loadingValuers, setLoadingValuers] = useState(false);
     const [pdfOnlySending, setPdfOnlySending] = useState(false);
+    const [validationDownloadPath, setValidationDownloadPath, resetValidationDownloadPath] = usePersistentState("elrajhi:validationDownloadPath", null);
+    const [downloadingValidationExcel, setDownloadingValidationExcel] = useState(false);
+    const [rememberedFiles, setRememberedFiles] = usePersistentState("elrajhi:fileSummary", {
+        mainExcel: null,
+        mainPdfs: [],
+        validationExcel: null,
+        validationPdfs: [],
+    });
 
     // --- existing helpers (not used in new flow, but kept as requested) ---
     const uploadExcelOnly = async () => {
@@ -273,6 +297,31 @@ const UploadReportElrajhi = () => {
 
             const batchIdFromData = data.batchId;
             const insertedCount = data.inserted || 0;
+            const reportsFromApi = Array.isArray(data.reports) ? data.reports : [];
+            if (reportsFromApi.length) {
+                setValidationReports((prev) => {
+                    // Map incoming _id to existing rows by order or asset name
+                    const byAsset = new Map();
+                    reportsFromApi.forEach((r) => {
+                        const key = (r.asset_name || "").toLowerCase();
+                        if (!byAsset.has(key)) byAsset.set(key, []);
+                        byAsset.get(key).push(r);
+                    });
+                    return prev.map((r) => {
+                        const list = byAsset.get((r.asset_name || "").toLowerCase()) || [];
+                        const next = list.shift();
+                        if (next) {
+                            return {
+                                ...r,
+                                record_id: next._id || next.id || next.record_id,
+                                report_id: next.report_id || r.report_id,
+                            };
+                        }
+                        return r;
+                    });
+                });
+            }
+            setValidationDownloadPath(`/elrajhi-upload/export/${batchIdFromData}`);
 
             // Update UI
             setValidationMessage({
@@ -284,6 +333,25 @@ const UploadReportElrajhi = () => {
             const electronResult = await window.electronAPI.elrajhiUploadReport(batchIdFromData, 1, false, true);
 
             if (electronResult?.status === "SUCCESS") {
+                const resultMap = (electronResult.results || []).reduce((acc, res) => {
+                    const key = res.record_id || res.recordId;
+                    const reportId = res.report_id || res.reportId;
+                    if (key && reportId) acc[key] = reportId;
+                    return acc;
+                }, {});
+
+                if (Object.keys(resultMap).length || (electronResult.results || []).length) {
+                    setValidationReports((prev) =>
+                        prev.map((r, idx) => {
+                            const key = r.record_id || r.recordId || r._id;
+                            const fallback = (electronResult.results || [])[idx]?.report_id
+                                || (electronResult.results || [])[idx]?.reportId;
+                            const reportId = resultMap[key] || r.report_id || fallback;
+                            return { ...r, report_id: reportId };
+                        })
+                    );
+                }
+
                 setValidationMessage({
                     type: "success",
                     text: `Upload succeeded. ${insertedCount} assets saved and sent to Taqeem browser.`
@@ -327,6 +395,30 @@ const UploadReportElrajhi = () => {
 
             const batchIdFromData = data.batchId;
             const insertedCount = data.inserted || 0;
+            const reportsFromApi = Array.isArray(data.reports) ? data.reports : [];
+            if (reportsFromApi.length) {
+                setValidationReports((prev) => {
+                    const byAsset = new Map();
+                    reportsFromApi.forEach((r) => {
+                        const key = (r.asset_name || "").toLowerCase();
+                        if (!byAsset.has(key)) byAsset.set(key, []);
+                        byAsset.get(key).push(r);
+                    });
+                    return prev.map((r) => {
+                        const list = byAsset.get((r.asset_name || "").toLowerCase()) || [];
+                        const next = list.shift();
+                        if (next) {
+                            return {
+                                ...r,
+                                record_id: next._id || next.id || next.record_id,
+                                report_id: next.report_id || r.report_id,
+                            };
+                        }
+                        return r;
+                    });
+                });
+            }
+            setValidationDownloadPath(`/elrajhi-upload/export/${batchIdFromData}`);
 
             // Filter reports to only include those with PDFs
             const pdfReports = validationReports.filter(report => report.pdf_name);
@@ -342,6 +434,25 @@ const UploadReportElrajhi = () => {
             const electronResult = await window.electronAPI.elrajhiUploadReport(batchIdFromData, 1, true, true);
 
             if (electronResult?.status === "SUCCESS") {
+                const resultMap = (electronResult.results || []).reduce((acc, res) => {
+                    const key = res.record_id || res.recordId;
+                    const reportId = res.report_id || res.reportId;
+                    if (key && reportId) acc[key] = reportId;
+                    return acc;
+                }, {});
+
+                if (Object.keys(resultMap).length || (electronResult.results || []).length) {
+                    setValidationReports((prev) =>
+                        prev.map((r, idx) => {
+                            const key = r.record_id || r.recordId || r._id;
+                            const fallback = (electronResult.results || [])[idx]?.report_id
+                                || (electronResult.results || [])[idx]?.reportId;
+                            const reportId = resultMap[key] || r.report_id || fallback;
+                            return { ...r, report_id: reportId };
+                        })
+                    );
+                }
+
                 setValidationMessage({
                     type: "success",
                     text: `PDF-only upload succeeded. ${pdfCount} assets with PDFs sent to Taqeem browser.`
@@ -372,16 +483,55 @@ const UploadReportElrajhi = () => {
         setSuccess("");
     };
 
+    const downloadExcelFile = async (path, setBusy, setMessage) => {
+        if (!path) return;
+        try {
+            setBusy(true);
+            const response = await httpClient.get(path, { responseType: "blob" });
+            const disposition = response.headers["content-disposition"] || "";
+            const match = disposition.match(/filename=\"?([^\";]+)\"?/i);
+            const filename = match && match[1] ? match[1] : "updated.xlsx";
+            const url = window.URL.createObjectURL(new Blob([response.data]));
+            const link = document.createElement("a");
+            link.href = url;
+            link.setAttribute("download", filename);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            window.URL.revokeObjectURL(url);
+        } catch (err) {
+            console.error("Failed to download Excel", err);
+            if (setMessage) {
+                setMessage({
+                    type: "error",
+                    text: "Failed to download updated Excel. Please try again.",
+                });
+            } else {
+                setError("Failed to download updated Excel");
+            }
+        } finally {
+            setBusy(false);
+        }
+    };
+
     const handleExcelChange = (e) => {
         resetMessages();
         const file = e.target.files?.[0];
         setExcelFile(file || null);
+        setRememberedFiles((prev) => ({
+            ...prev,
+            mainExcel: file ? file.name : null,
+        }));
     };
 
     const handlePdfsChange = (e) => {
         resetMessages();
         const files = Array.from(e.target.files || []);
         setPdfFiles(files);
+        setRememberedFiles((prev) => ({
+            ...prev,
+            mainPdfs: files.map((f) => f.name),
+        }));
     };
 
     const parseExcelForValidation = async (excel, pdfList = [], options = {}) => {
@@ -561,8 +711,11 @@ const UploadReportElrajhi = () => {
                     asset_name: d.asset_name,
                     client_name: d.client_name,
                     path_pdf: d.pdf_path, // map pdf_path → path_pdf for UI
+                    record_id: d._id || d.id || d.record_id || null,
                 })),
+                source: "system",
             });
+            setDownloadPath(`/elrajhi-upload/export/${batchIdFromApi}`);
 
             setSuccess(
                 `Upload complete. Inserted ${insertedCount} urgent assets into DB. Now sending to Taqeem...`
@@ -571,9 +724,34 @@ const UploadReportElrajhi = () => {
             const electronResult = await window.electronAPI.elrajhiUploadReport(batchIdFromApi, numTabs, false, false);
 
             if (electronResult?.status === "SUCCESS") {
+                // Attach report IDs returned from Taqeem to the table rows
+                const resultMap = (electronResult.results || []).reduce((acc, res) => {
+                    const key = res.record_id || res.recordId;
+                    const reportId = res.report_id || res.reportId;
+                    if (key && reportId) {
+                        acc[key] = reportId;
+                    }
+                    return acc;
+                }, {});
+
+                if (Object.keys(resultMap).length || (electronResult.results || []).length) {
+                    setExcelResult((prev) => {
+                        if (!prev) return prev;
+                        const reports = (prev.reports || []).map((r, idx) => {
+                            const key = r.record_id || r.recordId || r._id;
+                            const fallbackFromOrder = (electronResult.results || [])[idx]?.report_id
+                                || (electronResult.results || [])[idx]?.reportId;
+                            const reportId = resultMap[key] || r.report_id || fallbackFromOrder;
+                            return { ...r, report_id: reportId };
+                        });
+                        return { ...prev, reports };
+                    });
+                }
+
                 setSuccess(
                     `Upload succeeded. ${insertedCount} assets saved and sent to Taqeem browser.`
                 );
+                setDownloadPath(`/elrajhi-upload/export/${batchIdFromApi}`);
             } else {
                 const errMsg = electronResult?.error || "Upload to Taqeem failed. Make sure you selected a company.";
                 setError(errMsg);
@@ -590,7 +768,7 @@ const UploadReportElrajhi = () => {
         }
     };
 
-    const resetValidationBanner = () => setValidationMessage(null);
+    const resetValidationBanner = () => resetValidationMessage();
 
     const handleValidationFolderChange = (e) => {
         resetValidationBanner();
@@ -600,6 +778,11 @@ const UploadReportElrajhi = () => {
         const pdfList = incomingFiles.filter((file) => /\.pdf$/i.test(file.name));
         setValidationExcelFile(excel || null);
         setValidationPdfFiles(pdfList);
+        setRememberedFiles((prev) => ({
+            ...prev,
+            validationExcel: excel ? excel.name : null,
+            validationPdfs: pdfList.map((p) => p.name),
+        }));
     };
 
     const allAssetsTotalsValid = marketAssets.every(
@@ -627,9 +810,15 @@ const UploadReportElrajhi = () => {
         setValidationFolderFiles([]);
         setValidationExcelFile(null);
         setValidationPdfFiles([]);
-        setValidationReports([]);
-        setValidationMessage(null);
-        setMarketAssets([]);
+        resetValidationReports();
+        resetValidationMessage();
+        resetMarketAssets();
+        resetValidationDownloadPath();
+        setRememberedFiles((prev) => ({
+            ...prev,
+            validationExcel: null,
+            validationPdfs: [],
+        }));
     };
 
     const registerValidationFolder = async () => {
@@ -699,10 +888,16 @@ const UploadReportElrajhi = () => {
     };
 
     const clearAll = () => {
-        setExcelFile(null);
-        setPdfFiles([]);
-        setBatchId("");
-        setExcelResult(null);
+        resetAllFiles();
+        resetBatchId();
+        resetExcelResult();
+        resetDownloadPath();
+        setNumTabs(1);
+        setRememberedFiles((prev) => ({
+            ...prev,
+            mainExcel: null,
+            mainPdfs: [],
+        }));
         resetMessages();
     };
 
@@ -723,7 +918,13 @@ const UploadReportElrajhi = () => {
                     <label className="flex items-center justify-between px-3 py-2 bg-gray-50 border border-gray-200 rounded cursor-pointer hover:bg-gray-100">
                         <div className="flex items-center gap-2 text-sm text-gray-700">
                             <FolderOpen className="w-4 h-4" />
-                            <span>{excelFile ? excelFile.name : "Choose Excel file"}</span>
+                            <span>
+                                {excelFile
+                                    ? excelFile.name
+                                    : rememberedFiles.mainExcel
+                                        ? `Last: ${rememberedFiles.mainExcel}`
+                                        : "Choose Excel file"}
+                            </span>
                         </div>
                         <input
                             type="file"
@@ -767,7 +968,9 @@ const UploadReportElrajhi = () => {
                             <span>
                                 {pdfFiles.length
                                     ? `${pdfFiles.length} file(s) selected`
-                                    : "Choose PDF files"}
+                                    : rememberedFiles.mainPdfs.length
+                                        ? `Last: ${rememberedFiles.mainPdfs.length} PDF(s)`
+                                        : "Choose PDF files"}
                             </span>
                         </div>
                         <input
@@ -882,16 +1085,65 @@ const UploadReportElrajhi = () => {
 
             {excelResult?.reports?.length ? (
                 <div className="bg-white border rounded-lg shadow-sm">
-                    <div className="px-4 py-3 border-b flex items-center gap-2">
-                        <Info className="w-4 h-4 text-blue-600" />
-                        <div>
-                            <p className="text-sm font-semibold text-gray-800">
-                                Created Reports
-                            </p>
-                            <p className="text-xs text-gray-500">
-                                Batch: {excelResult.batchId}
-                            </p>
+                    <div className="px-4 py-3 border-b flex items-center gap-2 justify-between">
+                        <div className="flex items-center gap-2">
+                            <Info className="w-4 h-4 text-blue-600" />
+                            <div>
+                                <p className="text-sm font-semibold text-gray-800">
+                                    Created Reports
+                                </p>
+                                <p className="text-xs text-gray-500">
+                                    Batch: {excelResult.batchId}
+                                </p>
+                                {excelResult.source === "system" && (
+                                    <p className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-800 bg-emerald-50 border border-emerald-100 px-2 py-1 rounded">
+                                        <CheckCircle2 className="w-3 h-3" />
+                                        Reports created from system upload
+                                    </p>
+                                )}
+                            </div>
                         </div>
+                        {downloadPath && (
+                            <button
+                                type="button"
+                                onClick={async () => {
+                                    if (downloadingExcel) return;
+                                    try {
+                                        setDownloadingExcel(true);
+                                        const response = await httpClient.get(downloadPath, {
+                                            responseType: "blob",
+                                        });
+
+                                        const disposition = response.headers["content-disposition"] || "";
+                                        const match = disposition.match(/filename="?([^"]+)"?/);
+                                        const filename = match && match[1] ? match[1] : "updated.xlsx";
+
+                                        const url = window.URL.createObjectURL(new Blob([response.data]));
+                                        const link = document.createElement("a");
+                                        link.href = url;
+                                        link.setAttribute("download", filename);
+                                        document.body.appendChild(link);
+                                        link.click();
+                                        document.body.removeChild(link);
+                                        window.URL.revokeObjectURL(url);
+                                    } catch (err) {
+                                        console.error("Failed to download updated Excel", err);
+                                        setError("Failed to download updated Excel");
+                                    } finally {
+                                        setDownloadingExcel(false);
+                                    }
+                                }}
+                                className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-60"
+                                disabled={downloadingExcel}
+                            >
+                                {downloadingExcel ? (
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                ) : (
+                                    <Download className="w-4 h-4" />
+                                )}
+                                {downloadingExcel ? "Preparing..." : "Download updated Excel"}
+                            </button>
+                        )}
                     </div>
                     <div className="overflow-x-auto">
                         <table className="min-w-full text-sm">
@@ -901,6 +1153,7 @@ const UploadReportElrajhi = () => {
                                     <th className="px-4 py-2">Asset Name</th>
                                     <th className="px-4 py-2">Client Name</th>
                                     <th className="px-4 py-2">PDF Path</th>
+                                    <th className="px-4 py-2">Report ID</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -920,6 +1173,16 @@ const UploadReportElrajhi = () => {
                                                 </span>
                                             ) : (
                                                 <span className="text-gray-400">Not uploaded</span>
+                                            )}
+                                        </td>
+                                        <td className="px-4 py-2 text-gray-700">
+                                            {r.report_id ? (
+                                                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-1 text-emerald-800 border border-emerald-100">
+                                                    <CheckCircle2 className="w-3 h-3" />
+                                                    {r.report_id}
+                                                </span>
+                                            ) : (
+                                                <span className="text-gray-400">Pending from Taqeem</span>
                                             )}
                                         </td>
                                     </tr>
@@ -993,11 +1256,23 @@ const UploadReportElrajhi = () => {
                     <div className="grid grid-cols-2 gap-2 text-xs text-gray-600">
                         <div className="p-2 rounded bg-gray-50 border border-gray-100">
                             <p className="font-semibold text-gray-800">Excel detected</p>
-                            <p>{validationExcelFile ? validationExcelFile.name : "—"}</p>
+                            <p>
+                                {validationExcelFile
+                                    ? validationExcelFile.name
+                                    : rememberedFiles.validationExcel
+                                        ? `Last: ${rememberedFiles.validationExcel}`
+                                        : "—"}
+                            </p>
                         </div>
                         <div className="p-2 rounded bg-gray-50 border border-gray-100">
                             <p className="font-semibold text-gray-800">PDFs detected</p>
-                            <p>{validationPdfFiles.length} file(s)</p>
+                            <p>
+                                {validationPdfFiles.length
+                                    ? `${validationPdfFiles.length} file(s)`
+                                    : rememberedFiles.validationPdfs.length
+                                        ? `Last: ${rememberedFiles.validationPdfs.length} file(s)`
+                                        : "0 file(s)"}
+                            </p>
                         </div>
                     </div>
                     <div className="flex gap-2">
@@ -1133,16 +1408,33 @@ const UploadReportElrajhi = () => {
             </div>
 
             <div className="bg-white border border-gray-200 rounded-lg shadow-sm">
-                <div className="px-4 py-3 border-b flex items-center gap-2">
-                    <Files className="w-5 h-5 text-blue-600" />
-                    <div>
-                        <p className="text-sm font-semibold text-gray-900">
-                            Reports staged from folder
-                        </p>
-                        <p className="text-xs text-gray-500">
-                            After the folder is saved to the database, PDFs will appear here with asset and client info.
-                        </p>
+                <div className="px-4 py-3 border-b flex items-center gap-2 justify-between">
+                    <div className="flex items-center gap-2">
+                        <Files className="w-5 h-5 text-blue-600" />
+                        <div>
+                            <p className="text-sm font-semibold text-gray-900">
+                                Reports staged from folder
+                            </p>
+                            <p className="text-xs text-gray-500">
+                                After the folder is saved to the database, PDFs will appear here with asset and client info.
+                            </p>
+                        </div>
                     </div>
+                    {validationDownloadPath && (
+                        <button
+                            type="button"
+                            onClick={() => downloadExcelFile(validationDownloadPath, setDownloadingValidationExcel, setValidationMessage)}
+                            className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-3 py-2 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-60"
+                            disabled={downloadingValidationExcel}
+                        >
+                            {downloadingValidationExcel ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                                <Download className="w-4 h-4" />
+                            )}
+                            {downloadingValidationExcel ? "Preparing..." : "Download updated Excel"}
+                        </button>
+                    )}
                 </div>
                 {validationReports.length ? (
                     <div className="overflow-x-auto">
@@ -1155,6 +1447,7 @@ const UploadReportElrajhi = () => {
                                     <th className="px-4 py-2 text-left">Client name</th>
                                     <th className="px-4 py-2 text-left">Valuers (ID / Name / %)</th>
                                     <th className="px-4 py-2 text-left">Total %</th>
+                                    <th className="px-4 py-2 text-left">Report ID</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -1203,6 +1496,16 @@ const UploadReportElrajhi = () => {
                                         </td>
                                         <td className="px-4 py-2 text-gray-900 font-semibold">
                                             {report.totalPercentage ?? 0}%
+                                        </td>
+                                        <td className="px-4 py-2 text-gray-800">
+                                            {report.report_id ? (
+                                                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-1 text-emerald-800 border border-emerald-100 text-xs">
+                                                    <CheckCircle2 className="w-3 h-3" />
+                                                    {report.report_id}
+                                                </span>
+                                            ) : (
+                                                <span className="text-gray-400 text-xs">Pending</span>
+                                            )}
                                         </td>
                                     </tr>
                                 ))}

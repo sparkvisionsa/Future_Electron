@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { createDuplicateReport, fetchLatestUserReport } from "../../api/report";
 import { useSession } from "../context/SessionContext";
+import usePersistentState from "../hooks/usePersistentState";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -8,6 +9,7 @@ import {
   Upload,
   FileDown,
   Send,
+  RefreshCw,
 } from "lucide-react";
 
 const InputField = ({
@@ -139,7 +141,7 @@ const Section = ({ title, children }) => (
   </div>
 );
 
-const defaultFormData = {
+const buildDefaultFormData = () => ({
   report_id: "",
   title: "",
   purpose_id: "to set",
@@ -158,25 +160,28 @@ const defaultFormData = {
   email: "",
   has_other_users: false,
   report_users: [],
-};
+});
+
+const buildDefaultValuers = () => ([
+  {
+    valuer_name: "4210000296 - فالح مفلح فالح الشهراني",
+    contribution_percentage: 100,
+  },
+]);
 
 const DuplicateReport = () => {
   const { user } = useSession();
-  const [formData, setFormData] = useState(defaultFormData);
+  const [formData, setFormData, resetFormData] = usePersistentState("duplicate:formData", buildDefaultFormData());
   const [errors, setErrors] = useState({});
   const [excelFile, setExcelFile] = useState(null);
   const [pdfFile, setPdfFile] = useState(null);
   const [loadingReport, setLoadingReport] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [status, setStatus] = useState(null);
-  const [reportUsers, setReportUsers] = useState([]);
-  const [valuers, setValuers] = useState([
-    {
-      valuer_name: "4210000296 - فالح مفلح فالح الشهراني",
-      contribution_percentage: 100,
-    },
-  ]);
+  const [status, setStatus, resetStatus] = usePersistentState("duplicate:status", null);
+  const [reportUsers, setReportUsers, resetReportUsers] = usePersistentState("duplicate:reportUsers", formData?.report_users || []);
+  const [valuers, setValuers, resetValuers] = usePersistentState("duplicate:valuers", buildDefaultValuers());
   const [duplicates, setDuplicates] = useState([]);
+  const [fileNotes, setFileNotes, resetFileNotes] = usePersistentState("duplicate:fileNotes", { excelName: null, pdfName: null });
   const valuerOptions = useMemo(
     () => [
       "4210000352 - حسام سعيد علي الاسمري",
@@ -252,6 +257,28 @@ const DuplicateReport = () => {
     });
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
+  };
+
+  const clearSavedState = () => {
+    setFormData(buildDefaultFormData());
+    setReportUsers([]);
+    setValuers(buildDefaultValuers());
+    setExcelFile(null);
+    setPdfFile(null);
+    setErrors({});
+    resetStatus();
+    setFileNotes({ excelName: null, pdfName: null });
+    setDuplicates([]);
+  };
+
+  const setExcelFileAndRemember = (file) => {
+    setExcelFile(file);
+    setFileNotes((prev) => ({ ...prev, excelName: file ? file.name : null }));
+  };
+
+  const setPdfFileAndRemember = (file) => {
+    setPdfFile(file);
+    setFileNotes((prev) => ({ ...prev, pdfName: file ? file.name : null }));
   };
 
   const handleFieldChange = (field, value) => {
@@ -437,7 +464,7 @@ const DuplicateReport = () => {
   return (
     <div className="min-h-screen bg-gray-50 py-3 px-2">
       <div className="w-full max-w-full mx-auto px-1">
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
           <div>
             <h1 className="text-xl font-bold text-gray-900 mb-1">
               Duplicate report &amp; send new
@@ -452,18 +479,28 @@ const DuplicateReport = () => {
               </p>
             )}
           </div>
-          <button
-            onClick={handleFetchLatest}
-            disabled={loadingReport}
-            className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-blue-600 text-white text-sm font-semibold shadow hover:bg-blue-700 disabled:opacity-60"
-          >
-            {loadingReport ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <FileDown className="w-4 h-4" />
-            )}
-            Show report data
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleFetchLatest}
+              disabled={loadingReport}
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-blue-600 text-white text-sm font-semibold shadow hover:bg-blue-700 disabled:opacity-60"
+            >
+              {loadingReport ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <FileDown className="w-4 h-4" />
+              )}
+              Show report data
+            </button>
+            <button
+              type="button"
+              onClick={clearSavedState}
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-gray-100 text-gray-700 text-sm font-semibold hover:bg-gray-200"
+            >
+              <RefreshCw className="w-4 h-4" />
+              Clear saved form
+            </button>
+          </div>
         </div>
 
         {headerAlert}
@@ -831,10 +868,16 @@ const DuplicateReport = () => {
                 <p className="text-[11px] text-gray-500">
                   Must include sheets: market, cost.
                 </p>
-                {excelFile && (
+                {excelFile ? (
                   <p className="text-xs text-green-700 mt-1">
                     {excelFile.name}
                   </p>
+                ) : (
+                  fileNotes.excelName && (
+                    <p className="text-xs text-blue-700 mt-1">
+                      Last selected: {fileNotes.excelName}
+                    </p>
+                  )
                 )}
               </div>
               <label className="inline-flex items-center gap-2 px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded-md cursor-pointer text-xs font-semibold">
@@ -844,7 +887,7 @@ const DuplicateReport = () => {
                   type="file"
                   accept=".xlsx,.xls"
                   className="hidden"
-                  onChange={(e) => setExcelFile(e.target.files?.[0] || null)}
+                  onChange={(e) => setExcelFileAndRemember(e.target.files?.[0] || null)}
                 />
               </label>
             </div>
@@ -857,8 +900,14 @@ const DuplicateReport = () => {
                 <p className="text-[11px] text-gray-500">
                   Attach generated PDF if available.
                 </p>
-                {pdfFile && (
+                {pdfFile ? (
                   <p className="text-xs text-green-700 mt-1">{pdfFile.name}</p>
+                ) : (
+                  fileNotes.pdfName && (
+                    <p className="text-xs text-blue-700 mt-1">
+                      Last selected: {fileNotes.pdfName}
+                    </p>
+                  )
                 )}
               </div>
               <label className="inline-flex items-center gap-2 px-3 py-2 bg-gray-100 hover:bg-gray-200 rounded-md cursor-pointer text-xs font-semibold">
@@ -868,7 +917,7 @@ const DuplicateReport = () => {
                   type="file"
                   accept=".pdf"
                   className="hidden"
-                  onChange={(e) => setPdfFile(e.target.files?.[0] || null)}
+                  onChange={(e) => setPdfFileAndRemember(e.target.files?.[0] || null)}
                 />
               </label>
             </div>

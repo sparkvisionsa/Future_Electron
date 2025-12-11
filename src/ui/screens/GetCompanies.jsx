@@ -1,38 +1,61 @@
 import React, { useEffect, useState } from "react";
+import { useNavStatus } from "../context/NavStatusContext";
+import usePersistentState from "../hooks/usePersistentState";
 
-export default function GetCompanies() {
-    const [companies, setCompanies] = useState([]);
+export default function GetCompanies({ onViewChange }) {
+    const [companies, setCompanies, resetCompanies] = usePersistentState("get-companies:list", [], { storage: 'session' });
     const [loading, setLoading] = useState(false);
     const [navigating, setNavigating] = useState(false);
-    const [error, setError] = useState("");
-    const [successMessage, setSuccessMessage] = useState("");
-    const [selectedCompany, setSelectedCompany] = useState(null);
+    const [error, setError] = usePersistentState("get-companies:error", "", { storage: 'session' });
+    const [successMessage, setSuccessMessage] = usePersistentState("get-companies:success", "", { storage: 'session' });
+    const [selectedCompany, setSelectedCompany, resetSelectedCompany] = usePersistentState("get-companies:selected", null, { storage: 'session' });
+    const [navigationComplete, setNavigationComplete, _resetNavigationComplete] = usePersistentState("get-companies:navigationComplete", false, { storage: 'session' });
+    const { taqeemStatus, setCompanyStatus } = useNavStatus();
+
+    useEffect(() => {
+        if (navigationComplete && selectedCompany) {
+            const officeText = selectedCompany.office_id || selectedCompany.officeId || "unknown";
+            setCompanyStatus('success', `Navigated to ${selectedCompany.name || 'company'} (Office ${officeText})`);
+        } else if (selectedCompany) {
+            setCompanyStatus('info', `Selected ${selectedCompany.name}`);
+        } else {
+            setCompanyStatus('info', 'No company selected');
+        }
+    }, [navigationComplete, selectedCompany, setCompanyStatus]);
 
     const handleGetCompanies = async () => {
         setLoading(true);
         setError("");
         setSuccessMessage("");
         setSelectedCompany(null);
+        setNavigationComplete(false);
+        setCompanyStatus('info', 'No company selected');
         try {
             const data = await window.electronAPI.getCompanies();
 
             if (data.status === "SUCCESS") {
-                setCompanies(data.data);
+                setCompanies(data.data || []);
                 setSuccessMessage("Companies fetched successfully!");
+                setCompanyStatus('info', 'Select a company to navigate');
             } else {
                 setError(data.error || 'Failed to get companies');
+                setCompanyStatus('error', data.error || 'Failed to load companies');
             }
         } catch (err) {
             setError(err.message);
+            setCompanyStatus('error', err.message);
         } finally {
             setLoading(false);
         }
     };
 
     useEffect(() => {
+        if (companies && companies.length) {
+            return;
+        }
         handleGetCompanies();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    }, [companies]);
 
     const handleNavigateToCompany = async () => {
         if (!selectedCompany) return;
@@ -54,22 +77,82 @@ export default function GetCompanies() {
                 setSelectedCompany({ ...selectedCompany, ...chosen });
                 const officeText = chosen.office_id || chosen.officeId || "unknown";
                 setSuccessMessage(`Navigation completed successfully! Office ID: ${officeText}`);
+                setNavigationComplete(true);
+                setCompanyStatus('success', `Navigated to ${chosen.name || 'company'} (Office ${officeText})`);
             } else {
                 setError(data.error || 'Failed to navigate to company');
+                setCompanyStatus('error', data.error || 'Failed to navigate to company');
             }
         } catch (err) {
             setError(err.message);
+            setCompanyStatus('error', err.message);
         } finally {
             setNavigating(false);
         }
     };
 
+    const renderPrimaryButton = () => {
+        if (navigationComplete) {
+            return (
+                <button
+                    onClick={() => {
+                        setNavigationComplete(false);
+                        resetSelectedCompany();
+                        resetCompanies();
+                        setSuccessMessage('');
+                        setError('');
+                        setCompanyStatus('info', 'Select a company to navigate');
+                    }}
+                    className="bg-amber-600 text-white py-3 px-8 rounded-lg font-semibold hover:bg-amber-700 focus:ring-2 focus:ring-amber-500 focus:ring-offset-2 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
+                >
+                    Select another company
+                </button>
+            );
+        }
+
+        return (
+            <button
+                onClick={handleGetCompanies}
+                disabled={loading}
+                className="bg-indigo-600 text-white py-3 px-8 rounded-lg font-semibold hover:bg-indigo-700 focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
+            >
+                {loading ? (
+                    <>
+                        <svg
+                            className="animate-spin -ml-1 mr-3 h-5 w-5 text-white"
+                            xmlns="http://www.w3.org/2000/svg"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                        >
+                            <circle
+                                className="opacity-25"
+                                cx="12"
+                                cy="12"
+                                r="10"
+                                stroke="currentColor"
+                                strokeWidth="4"
+                            ></circle>
+                            <path
+                                className="opacity-75"
+                                fill="currentColor"
+                                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                            ></path>
+                        </svg>
+                        Loading...
+                    </>
+                ) : (
+                    "Refresh"
+                )}
+            </button>
+        );
+    };
+
     return (
         <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-6">
             <div className="max-w-4xl mx-auto">
-                <div className="bg-white rounded-2xl shadow-xl p-8">
-                    <div className="text-center mb-8">
-                        <h1 className="text-3xl font-bold text-gray-900 mb-4">
+                <div className="bg-white rounded-2xl shadow-xl p-8 space-y-6">
+                    <div className="text-center">
+                        <h1 className="text-3xl font-bold text-gray-900 mb-2">
                             Get Companies
                         </h1>
                         <p className="text-gray-600">
@@ -77,40 +160,28 @@ export default function GetCompanies() {
                         </p>
                     </div>
 
-                    <div className="flex justify-center mb-8">
-                        <button
-                            onClick={handleGetCompanies}
-                            disabled={loading}
-                            className="bg-indigo-600 text-white py-3 px-8 rounded-lg font-semibold hover:bg-indigo-700 focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center"
-                        >
-                            {loading ? (
-                                <>
-                                    <svg
-                                        className="animate-spin -ml-1 mr-3 h-5 w-5 text-white"
-                                        xmlns="http://www.w3.org/2000/svg"
-                                        fill="none"
-                                        viewBox="0 0 24 24"
-                                    >
-                                        <circle
-                                            className="opacity-25"
-                                            cx="12"
-                                            cy="12"
-                                            r="10"
-                                            stroke="currentColor"
-                                            strokeWidth="4"
-                                        ></circle>
-                                        <path
-                                            className="opacity-75"
-                                            fill="currentColor"
-                                            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                                        ></path>
-                                    </svg>
-                                    Loading...
-                                </>
-                            ) : (
-                                "Refresh"
-                            )}
-                        </button>
+                    {taqeemStatus?.state === 'success' && (
+                        <div className="rounded-xl border border-green-200 bg-green-50 p-4 flex items-start gap-3 shadow-sm">
+                            <div className="flex-shrink-0">
+                                <svg className="w-5 h-5 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 00-1.414-1.414L8 11.172 4.707 7.879A1 1 0 003.293 9.293l4 4a1 1 0 001.414 0l8-8z" clipRule="evenodd" />
+                                </svg>
+                            </div>
+                            <div className="flex-1">
+                                <p className="text-sm text-green-800 font-semibold">Already logged into Taqeem</p>
+                                <p className="text-sm text-green-700 mt-1">You can continue selecting companies or return to the Taqeem login form.</p>
+                            </div>
+                            <button
+                                onClick={() => onViewChange && onViewChange('taqeem-login')}
+                                className="text-sm font-semibold text-green-900 bg-white border border-green-200 px-3 py-2 rounded-lg hover:bg-green-100"
+                            >
+                                Go to Taqeem login
+                            </button>
+                        </div>
+                    )}
+
+                    <div className="flex justify-center">
+                        {renderPrimaryButton()}
                     </div>
 
                     {error && (
@@ -120,8 +191,16 @@ export default function GetCompanies() {
                     )}
 
                     {successMessage && (
-                        <div className="mb-6 p-4 bg-green-50 text-green-700 border border-green-200 rounded-lg">
-                            {successMessage}
+                        <div className="mb-6 p-4 bg-gradient-to-r from-green-50 to-emerald-100 text-green-800 border border-green-200 rounded-lg shadow-sm">
+                            <div className="flex items-start gap-3">
+                                <svg className="w-5 h-5 mt-0.5 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 00-1.414-1.414L8 11.172 4.707 7.879A1 1 0 003.293 9.293l4 4a1 1 0 001.414 0l8-8z" clipRule="evenodd" />
+                                </svg>
+                                <div>
+                                    <p className="font-semibold">Success</p>
+                                    <p className="text-sm">{successMessage}</p>
+                                </div>
+                            </div>
                         </div>
                     )}
 
@@ -142,6 +221,11 @@ export default function GetCompanies() {
                                         onChange={(e) => {
                                             const next = companies.find((company) => company.url === e.target.value);
                                             setSelectedCompany(next || null);
+                                            if (next) {
+                                                setCompanyStatus('info', `Selected ${next.name}`);
+                                            } else {
+                                                setCompanyStatus('info', 'No company selected');
+                                            }
                                         }}
                                         className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
                                     >
@@ -183,7 +267,7 @@ export default function GetCompanies() {
                                                 Navigating...
                                             </>
                                         ) : (
-                                            "Navigate to Company"
+                                            "Select Company"
                                         )}
                                     </button>
                                 </div>
@@ -196,7 +280,10 @@ export default function GetCompanies() {
                                         key={index}
                                         className={`bg-gradient-to-r from-blue-50 to-indigo-50 p-6 rounded-xl border hover:shadow-lg transition-shadow duration-300 cursor-pointer ${selectedCompany?.url === company.url ? 'border-green-500 ring-2 ring-green-200' : 'border-blue-100'
                                             }`}
-                                        onClick={() => setSelectedCompany(company)}
+                                        onClick={() => {
+                                            setSelectedCompany(company);
+                                            setCompanyStatus('info', `Selected ${company.name}`);
+                                        }}
                                     >
                                         <div className="flex items-center mb-3">
                                             <div className="bg-blue-500 p-2 rounded-lg mr-3">
@@ -219,6 +306,26 @@ export default function GetCompanies() {
                                     </div>
                                 ))}
                             </div>
+
+                            {navigationComplete && selectedCompany && (
+                                <div className="mt-6 rounded-xl border border-emerald-200 bg-white shadow-sm p-6">
+                                    <div className="flex items-center gap-3 mb-4">
+                                        <div className="h-10 w-10 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold">
+                                            {selectedCompany.name?.charAt(0) || 'C'}
+                                        </div>
+                                        <div>
+                                            <p className="text-lg font-semibold text-gray-900">Company selected</p>
+                                            <p className="text-sm text-gray-600">Details from your navigation</p>
+                                        </div>
+                                    </div>
+                                    <div className="grid gap-3 sm:grid-cols-2">
+                                        <InfoRow label="Name" value={selectedCompany.name} />
+                                        <InfoRow label="Office ID" value={selectedCompany.office_id || selectedCompany.officeId || 'Unknown'} />
+                                        <InfoRow label="Sector ID" value={selectedCompany.sector_id || selectedCompany.sectorId || 'N/A'} />
+                                        <InfoRow label="URL" value={selectedCompany.url} />
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>
@@ -226,3 +333,10 @@ export default function GetCompanies() {
         </div>
     );
 }
+
+const InfoRow = ({ label, value }) => (
+    <div className="flex flex-col rounded-lg border border-gray-100 bg-gray-50 px-4 py-3">
+        <span className="text-xs uppercase tracking-wide text-gray-500">{label}</span>
+        <span className="text-sm text-gray-900 break-all">{value || '—'}</span>
+    </div>
+);

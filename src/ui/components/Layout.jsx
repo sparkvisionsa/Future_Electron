@@ -3,6 +3,7 @@ import Sidebar from './Sidebar';
 import { AlertTriangle, Bell, Download, RefreshCcw, ShieldCheck } from 'lucide-react';
 import { useSession } from '../context/SessionContext';
 import { useSystemControl } from '../context/SystemControlContext';
+import { useNavStatus } from '../context/NavStatusContext';
 
 const Layout = ({ children, currentView, onViewChange }) => {
     const { isAuthenticated, user } = useSession();
@@ -21,6 +22,7 @@ const Layout = ({ children, currentView, onViewChange }) => {
         updateBlocked,
         updateSystemState
     } = useSystemControl();
+    const { taqeemStatus, companyStatus } = useNavStatus();
 
     const isAdmin = user?.phone === '011111';
     const blocked = isAuthenticated && (isFeatureBlocked(currentView) || updateBlocked());
@@ -133,6 +135,26 @@ const Layout = ({ children, currentView, onViewChange }) => {
     const isMandatoryUpdate = latestUpdate?.rolloutType === 'mandatory';
     const shouldShowUpdateNotice = isAuthenticated && !isAdmin && latestUpdate && userUpdateState?.status !== 'applied' && !hideUpdateNotice;
 
+    const statusStyles = (state) => {
+        switch (state) {
+            case 'success':
+                return 'border-green-200 bg-green-50 text-green-800';
+            case 'error':
+                return 'border-red-200 bg-red-50 text-red-800';
+            case 'info':
+                return 'border-blue-200 bg-blue-50 text-blue-800';
+            default:
+                return 'border-gray-200 bg-gray-50 text-gray-700';
+        }
+    };
+
+    const renderStatusPill = (label, status) => (
+        <div className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm shadow-sm ${statusStyles(status?.state)}`}>
+            <span className="font-semibold">{label}:</span>
+            <span className="truncate">{status?.message}</span>
+        </div>
+    );
+
     const updateNotice = shouldShowUpdateNotice ? (
         <div className="mb-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900 flex flex-col gap-2">
             <div className="flex items-center gap-2">
@@ -220,6 +242,10 @@ const Layout = ({ children, currentView, onViewChange }) => {
                                 {getViewTitle(currentView)}
                             </h1>
                             {statusBanner}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-3">
+                            {renderStatusPill('Taqeem', taqeemStatus)}
+                            {renderStatusPill('Company', companyStatus)}
                         </div>
                         {isAuthenticated && !isAdmin && mode === 'inactive' && (
                             <div className="flex items-center gap-2 text-sm text-red-800 bg-red-50 border border-red-200 px-3 py-2 rounded-lg">
