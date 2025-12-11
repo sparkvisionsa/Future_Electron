@@ -23,11 +23,8 @@ import TaqeemAuth from './screens/TaqeemAuth';
 import SystemOperatingStatus from './screens/SystemOperatingStatus';
 import SystemUpdates from './screens/SystemUpdates';
 import ElRajhiUploadReport from './screens/ElRajhiUploadReport';
-<<<<<<< HEAD
 import DuplicateReport from './screens/DuplicateReport';
-=======
 import MultiExcelUpload from './screens/MultiExcelUpload';
->>>>>>> 61fafd9 (midway)
 
 const AppContent = () => {
     const [currentView, setCurrentView] = useState(null);
@@ -101,13 +98,11 @@ const AppContent = () => {
             case 'upload-report-elrajhi':
                 return <ElRajhiUploadReport />;
 
-<<<<<<< HEAD
             case 'duplicate-report':
                 return <DuplicateReport />;
-=======
+
             case 'multi-excel-upload':
                 return <MultiExcelUpload />;
->>>>>>> 61fafd9 (midway)
 
             default:
                 return <LoginForm onViewChange={setCurrentView} />;
