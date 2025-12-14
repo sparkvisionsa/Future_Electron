@@ -1781,7 +1781,7 @@ const UploadReportElrajhi = () => {
                             ) : (
                                 <Send className="w-4 h-4" />
                             )}
-                        Send all reports ({numTabs} tab{numTabs !== 1 ? "s" : ""})
+                            Send all reports ({numTabs} tab{numTabs !== 1 ? "s" : ""})
                         </button>
                         <button
                             type="button"
@@ -1834,6 +1834,69 @@ const UploadReportElrajhi = () => {
                         )}
                         Check all batches
                     </button>
+                </div>
+            </div>
+
+            {/* Added numTabs input section */}
+            <div className="bg-white border border-gray-200 rounded-lg shadow-sm p-4">
+                <div className="flex items-center gap-3 mb-3">
+                    <FolderOpen className="w-5 h-5 text-blue-600" />
+                    <div>
+                        <p className="text-sm font-semibold text-gray-900">Tabs Configuration</p>
+                        <p className="text-xs text-gray-500">
+                            Set the number of tabs to open in Taqeem for batch checking operations
+                        </p>
+                    </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-4">
+                    <div className="space-y-2">
+                        <label className="text-xs font-semibold text-gray-700">
+                            Number of tabs to open in Taqeem:
+                        </label>
+                        <div className="flex items-center gap-2">
+                            <button
+                                type="button"
+                                onClick={() => setNumTabs(prev => Math.max(1, prev - 1))}
+                                disabled={numTabs <= 1}
+                                className="px-3 py-1 bg-gray-200 rounded-md text-gray-700 hover:bg-gray-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                -
+                            </button>
+                            <input
+                                type="number"
+                                min="1"
+                                max="50"
+                                value={numTabs}
+                                onChange={(e) => {
+                                    const value = parseInt(e.target.value);
+                                    if (!isNaN(value) && value >= 1 && value <= 10) {
+                                        setNumTabs(value);
+                                    }
+                                }}
+                                className="w-16 px-2 py-1 border border-gray-300 rounded-md text-center text-sm"
+                            />
+                            <button
+                                type="button"
+                                onClick={() => setNumTabs(prev => Math.min(10, prev + 1))}
+                                disabled={numTabs >= 10}
+                                className="px-3 py-1 bg-gray-200 rounded-md text-gray-700 hover:bg-gray-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                +
+                            </button>
+                            <span className="text-xs text-gray-500 ml-1">
+                                (1-10)
+                            </span>
+                        </div>
+                        <p className="text-xs text-gray-500">
+                            Each tab will process a portion of the reports during batch checking.
+                        </p>
+                    </div>
+
+                    <div className="text-xs text-gray-600 bg-slate-50 p-3 rounded-lg border border-slate-200">
+                        <p className="font-semibold text-gray-700 mb-1">Current setting: {numTabs} tab{numTabs !== 1 ? "s" : ""}</p>
+                        <p>This setting is used when checking batches and reuploading reports.</p>
+                    </div>
                 </div>
             </div>
 
@@ -1915,19 +1978,66 @@ const UploadReportElrajhi = () => {
                                                     </span>
                                                 </td>
                                                 <td className="px-4 py-3 text-right">
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => runBatchCheck(batch.batchId)}
-                                                        disabled={checkingBatchId === batch.batchId}
-                                                        className="inline-flex items-center gap-2 rounded-md bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
-                                                    >
-                                                        {checkingBatchId === batch.batchId ? (
-                                                            <Loader2 className="w-4 h-4 animate-spin" />
-                                                        ) : (
-                                                            <RefreshCw className="w-4 h-4" />
-                                                        )}
-                                                        Check batch
-                                                    </button>
+                                                    <div className="flex gap-2 justify-end">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => runBatchCheck(batch.batchId)}
+                                                            disabled={checkingBatchId === batch.batchId}
+                                                            className="inline-flex items-center gap-2 rounded-md bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
+                                                        >
+                                                            {checkingBatchId === batch.batchId ? (
+                                                                <Loader2 className="w-4 h-4 animate-spin" />
+                                                            ) : (
+                                                                <RefreshCw className="w-4 h-4" />
+                                                            )}
+                                                            Check batch
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={async () => {
+                                                                if (!window?.electronAPI?.retryElrajhiReport) {
+                                                                    setBatchMessage({
+                                                                        type: "error",
+                                                                        text: "Desktop integration unavailable. Restart the app.",
+                                                                    });
+                                                                    return;
+                                                                }
+                                                                setCheckingBatchId(batch.batchId);
+                                                                setBatchMessage({
+                                                                    type: "info",
+                                                                    text: `Retrying batch ${batch.batchId}...`
+                                                                });
+                                                                try {
+                                                                    const result = await window.electronAPI.retryElrajhiReport(batch.batchId, numTabs);
+                                                                    if (result?.status !== "SUCCESS") {
+                                                                        throw new Error(result?.error || "Retry failed");
+                                                                    }
+                                                                    setBatchMessage({
+                                                                        type: "success",
+                                                                        text: `Retry completed for batch ${batch.batchId}`
+                                                                    });
+                                                                    await loadBatchReports(batch.batchId);
+                                                                    await loadBatchList();
+                                                                } catch (err) {
+                                                                    setBatchMessage({
+                                                                        type: "error",
+                                                                        text: err.message || "Failed to retry batch"
+                                                                    });
+                                                                } finally {
+                                                                    setCheckingBatchId(null);
+                                                                }
+                                                            }}
+                                                            disabled={checkingBatchId === batch.batchId}
+                                                            className="inline-flex items-center gap-2 rounded-md bg-purple-600 px-3 py-2 text-xs font-semibold text-white hover:bg-purple-700 disabled:opacity-60"
+                                                        >
+                                                            {checkingBatchId === batch.batchId ? (
+                                                                <Loader2 className="w-4 h-4 animate-spin" />
+                                                            ) : (
+                                                                <RotateCw className="w-4 h-4" />
+                                                            )}
+                                                            Retry
+                                                        </button>
+                                                    </div>
                                                 </td>
                                             </tr>
                                             {isExpanded && (

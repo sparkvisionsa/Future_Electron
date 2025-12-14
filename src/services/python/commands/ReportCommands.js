@@ -76,6 +76,14 @@ class ReportCommands {
         });
     }
 
+    async retryAlRahjiReport(batchId, tabsNum) {
+        return this._sendCommand({
+            action: 'retry-ElRajhi-report',
+            batchId,
+            tabsNum
+        });
+    }
+
     async pauseMacroFill(reportId) {
         return this._sendCommand({
             action: 'pause-macro-edit',

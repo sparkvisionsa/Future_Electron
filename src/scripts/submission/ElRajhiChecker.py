@@ -144,6 +144,9 @@ async def check_elrajhi_batches(browser, batch_id=None, tabs_num=3):
         group["total"] = len(group["reports"])
         group["incomplete"] = group["total"] - complete
 
+    for page in pages:
+        await page.close()
+
     return {"status": "SUCCESS", "batches": list(grouped.values())}
 
 
@@ -181,6 +184,8 @@ async def reupload_elrajhi_report(browser, report_id):
         submit_state = 1 if finalize_result.get("status") == "SUCCESS" else 0
 
         await _mark_submit_state(report_doc, submit_state)
+
+
 
         return {
             "status": "SUCCESS" if submit_state else "FAILED",

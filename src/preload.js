@@ -53,6 +53,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     reuploadElrajhiReport: (reportId) => safeInvoke('elrajhi-reupload-report', reportId),
     duplicateReportNavigate: (recordId, company) => safeInvoke('duplicate-report', recordId, company),
     createReportsByBatch: (batchId, tabsNum) => safeInvoke('create-reports-by-batch', batchId, tabsNum),
+    retryElrajhiReport: (batchId, tabsNum) => safeInvoke('retry-ElRajhi-report', batchId, tabsNum),
 
     // Pause/Resume/Stop controls
     pauseMacroFill: (reportId) => safeInvoke('pause-macro-fill', reportId),

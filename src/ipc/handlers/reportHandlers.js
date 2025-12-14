@@ -106,6 +106,15 @@ const reportHandlers = {
         }
     },
 
+    async handleRetryElRajhiReport(event, batchId, tabsNum) {
+        try {
+            return await pythonAPI.report.retryAlRahjiReport(batchId, tabsNum);
+        } catch (err) {
+            console.error('[MAIN] Retry ElRajhi report error:', err && err.stack ? err.stack : err);
+            return { status: 'FAILED', error: err.message || String(err) };
+        }
+    },
+
     async handleGrabMacroIds(event, reportId, tabsNum) {
         try {
             return await pythonAPI.report.grabMacroIds(reportId, tabsNum);

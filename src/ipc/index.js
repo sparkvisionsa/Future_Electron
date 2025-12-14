@@ -11,7 +11,8 @@ function registerIpcHandlers() {
     ipcMain.handle('register', authHandlers.handleRegister);
     ipcMain.handle('auth-set-refresh-token', authHandlers.handleSetRefreshToken);
     ipcMain.handle('auth-clear-refresh-token', authHandlers.handleClearRefreshToken);
-    ipcMain.handle('get-token', authHandlers.getRefreshToken)
+    ipcMain.handle('get-token', authHandlers.getRefreshToken);
+
 
 
     // Report handlers
@@ -26,6 +27,7 @@ function registerIpcHandlers() {
     ipcMain.handle('elrajhi-reupload-report', reportHandlers.handleReuploadElRajhiReport);
     ipcMain.handle('duplicate-report', reportHandlers.handleDuplicateReport);
     ipcMain.handle('create-reports-by-batch', reportHandlers.handleCreateReportsByBatch);
+    ipcMain.handle('retry-ElRajhi-report', reportHandlers.handleRetryElRajhiReport);
 
     ipcMain.handle('pause-macro-fill', reportHandlers.handlePauseMacroFill);
     ipcMain.handle('resume-macro-fill', reportHandlers.handleResumeMacroFill);
@@ -91,6 +93,7 @@ function unregisterIpcHandlers() {
     ipcMain.removeAllListeners('elrajhi-reupload-report');
     ipcMain.removeAllListeners('duplicate-report');
     ipcMain.removeAllListeners('create-reports-by-batch');
+    ipcMain.removeAllListeners('retry-ElRajhi-report');
 
     ipcMain.removeAllListeners('pause-macro-fill');
     ipcMain.removeAllListeners('resume-macro-fill');

@@ -621,6 +621,548 @@ async def ElRajhiFiller(browser, batch_id, tabs_num=3, pdf_only=False, company_u
         clear_pause_state(batch_id)
         
         return {"status": "FAILED", "error": str(e), "traceback": tb}
+    
+async def ElrajhiRetry(browser, batch_id, tabs_num=3, pdf_only=False, company_url=None, finalize_submission=False):
+    try:
+        # Fetch all report records with this batch_id
+        cursor = db.urgentreports.find({"batch_id": batch_id})
+        raw_records = await cursor.to_list(length=None)
+
+        # Deduplicate
+        seen_ids = set()
+        report_records = []
+        for rec in raw_records:
+            rec_id = str(rec.get("_id"))
+            if rec_id in seen_ids:
+                continue
+            seen_ids.add(rec_id)
+            report_records.append(rec)
+
+        if not report_records:
+            return {"status": "FAILED", "error": f"No reports found for batch_id: {batch_id}"}
+
+        # Filter incomplete records: have report_id but submit_state is 0
+        incomplete_records = [
+            rec for rec in report_records
+            if rec.get("report_id") and rec.get("submit_state") == 0
+        ]
+
+        # Filter non-created records: no report_id at all
+        non_created_records = [
+            rec for rec in report_records
+            if not rec.get("report_id")
+        ]
+
+        if pdf_only:
+            incomplete_records = [r for r in incomplete_records if not is_dummy_pdf(r)]
+            non_created_records = [r for r in non_created_records if not is_dummy_pdf(r)]
+
+        total_incomplete = len(incomplete_records)
+        total_non_created = len(non_created_records)
+        total_records = total_incomplete + total_non_created
+
+        if total_records == 0:
+            return {
+                "status": "SUCCESS",
+                "message": "No records to retry",
+                "incomplete": 0,
+                "non_created": 0
+            }
+
+        try:
+            if company_url:
+                if isinstance(company_url, dict):
+                    set_selected_company(
+                        company_url.get("url"),
+                        name=company_url.get("name"),
+                        office_id=company_url.get("officeId") or company_url.get("office_id"),
+                        sector_id=company_url.get("sectorId") or company_url.get("sector_id"),
+                    )
+                else:
+                    set_selected_company(company_url)
+            require_selected_company()
+            create_url = build_report_create_url()
+        except Exception as ctx_err:
+            return {"status": "FAILED", "error": str(ctx_err)}
+
+        # Initialize pause state
+        set_pause_state(batch_id, paused=False, stopped=False)
+
+        # Use single tab for report operations
+        main_page = browser.tabs[0]
+
+        # Counters
+        completed_incomplete = 0
+        failed_incomplete = 0
+        completed_non_created = 0
+        failed_non_created = 0
+        finalized_reports = 0
+        finalization_failed = 0
+
+        macros_to_fill = []
+        retry_results = []
+
+        # Send initial progress
+        initial_progress = {
+            "type": "progress",
+            "batchId": batch_id,
+            "phase": "retry_incomplete",
+            "completed": 0,
+            "failed": 0,
+            "total": total_incomplete,
+            "percentage": 0,
+            "paused": False,
+            "message": f"Starting retry: {total_incomplete} incomplete, {total_non_created} non-created"
+        }
+        print(json.dumps(initial_progress), flush=True)
+
+        # ===== PHASE 1: Process incomplete records =====
+        for idx, report_record in enumerate(incomplete_records):
+            # Check pause/stop state
+            pause_check = await check_pause_state(batch_id)
+            if pause_check["action"] == "stop":
+                print(f"Retry stopped by user request during incomplete phase")
+                clear_pause_state(batch_id)
+                return {
+                    "status": "STOPPED",
+                    "message": "Retry stopped by user",
+                    "completed_incomplete": completed_incomplete,
+                    "failed_incomplete": failed_incomplete,
+                    "completed_non_created": completed_non_created,
+                    "failed_non_created": failed_non_created
+                }
+
+            try:
+                report_id = report_record.get("report_id")
+                
+                # Send progress
+                pause_state = get_pause_state(batch_id)
+                progress_data = {
+                    "type": "progress",
+                    "batchId": batch_id,
+                    "phase": "retry_incomplete",
+                    "currentRecordId": str(report_record["_id"]),
+                    "completed": completed_incomplete,
+                    "failed": failed_incomplete,
+                    "total": total_incomplete,
+                    "percentage": round((completed_incomplete / total_incomplete) * 100, 2) if total_incomplete > 0 else 0,
+                    "paused": pause_state.get("paused", False),
+                    "message": f"Processing incomplete report {completed_incomplete + 1}/{total_incomplete}",
+                    "report_id": report_id
+                }
+                print(json.dumps(progress_data), flush=True)
+
+                # Navigate to the report page
+                report_url = f"https://qima.taqeem.sa/report/{report_id}"
+                await main_page.get(report_url)
+                await asyncio.sleep(2)
+
+                # Check if macro exists in table
+                table = await wait_for_table_rows(main_page, timeout=10)
+                macro_link = None
+                if table:
+                    macro_link = await wait_for_element(main_page, "#m-table tbody tr:first-child td:nth-child(1) a", timeout=5)
+
+                macro_id = None
+                if macro_link:
+                    # Macro exists, grab the ID
+                    macro_id = macro_link.text.strip()
+                    print(f"Found existing macro: {macro_id}")
+                else:
+                    # No macro exists, create one
+                    print(f"No macro found for report {report_id}, creating one...")
+                    
+                    # Import the create assets function
+                    from .createMacros import run_create_assets
+                    
+                    # Get macro data for this report
+                    macro_data = extract_asset_from_report(report_record)
+                    
+                    # Create one macro using the run_create_assets function
+                    create_result = await run_create_assets(
+                        browser=browser,
+                        report_id=report_id,
+                        macro_count=1,
+                        tabs_num=1,
+                        batch_size=1,
+                        macro_data=macro_data
+                    )
+
+                    if create_result.get("status") == "FAILED":
+                        raise Exception(f"Failed to create macro: {create_result.get('error')}")
+
+                    # Go back to report page to get the newly created macro ID
+                    await main_page.get(report_url)
+                    await asyncio.sleep(2)
+                    await wait_for_table_rows(main_page)
+                    macro_link = await wait_for_element(main_page, "#m-table tbody tr:first-child td:nth-child(1) a")
+                    
+                    if not macro_link:
+                        raise Exception("Could not find newly created macro")
+                    
+                    macro_id = macro_link.text.strip()
+                    print(f"Created new macro: {macro_id}")
+
+                # Collect macro for filling
+                macro_data = extract_asset_from_report(report_record)
+                macros_to_fill.append({
+                    "macro_id": macro_id,
+                    "macro_data": macro_data,
+                    "report_id": report_id,
+                    "record_id": str(report_record["_id"])
+                })
+
+                completed_incomplete += 1
+                retry_results.append({
+                    "status": "SUCCESS",
+                    "type": "incomplete",
+                    "report_id": report_id,
+                    "macro_id": macro_id,
+                    "record_id": str(report_record["_id"])
+                })
+
+                # Send progress after processing
+                pause_state = get_pause_state(batch_id)
+                progress_data = {
+                    "type": "progress",
+                    "batchId": batch_id,
+                    "phase": "retry_incomplete",
+                    "currentRecordId": str(report_record["_id"]),
+                    "completed": completed_incomplete,
+                    "failed": failed_incomplete,
+                    "total": total_incomplete,
+                    "percentage": round((completed_incomplete / total_incomplete) * 100, 2) if total_incomplete > 0 else 0,
+                    "paused": pause_state.get("paused", False),
+                    "message": f"Processed incomplete report {completed_incomplete}/{total_incomplete}",
+                    "status": "SUCCESS",
+                    "report_id": report_id,
+                    "macro_id": macro_id
+                }
+                print(json.dumps(progress_data), flush=True)
+
+            except Exception as e:
+                failed_incomplete += 1
+                error_result = {
+                    "status": "FAILED",
+                    "type": "incomplete",
+                    "error": str(e),
+                    "record_id": str(report_record["_id"]),
+                    "report_id": report_record.get("report_id")
+                }
+                retry_results.append(error_result)
+
+                # Send error progress
+                pause_state = get_pause_state(batch_id)
+                error_data = {
+                    "type": "progress",
+                    "batchId": batch_id,
+                    "phase": "retry_incomplete",
+                    "currentRecordId": str(report_record["_id"]),
+                    "completed": completed_incomplete,
+                    "failed": failed_incomplete,
+                    "total": total_incomplete,
+                    "percentage": round((completed_incomplete / total_incomplete) * 100, 2) if total_incomplete > 0 else 0,
+                    "paused": pause_state.get("paused", False),
+                    "message": f"Error processing incomplete report: {str(e)}",
+                    "status": "FAILED"
+                }
+                print(json.dumps(error_data), flush=True)
+
+        print(f"Phase 1 complete: Processed {completed_incomplete} incomplete reports, {failed_incomplete} failed")
+
+        # ===== PHASE 2: Process non-created records =====
+        if non_created_records:
+            non_created_progress = {
+                "type": "progress",
+                "batchId": batch_id,
+                "phase": "retry_non_created",
+                "completed": 0,
+                "failed": 0,
+                "total": total_non_created,
+                "percentage": 0,
+                "paused": False,
+                "message": f"Starting non-created reports phase..."
+            }
+            print(json.dumps(non_created_progress), flush=True)
+
+            for idx, report_record in enumerate(non_created_records):
+                # Check pause/stop state
+                pause_check = await check_pause_state(batch_id)
+                if pause_check["action"] == "stop":
+                    print(f"Retry stopped by user request during non-created phase")
+                    clear_pause_state(batch_id)
+                    return {
+                        "status": "STOPPED",
+                        "message": "Retry stopped by user",
+                        "completed_incomplete": completed_incomplete,
+                        "failed_incomplete": failed_incomplete,
+                        "completed_non_created": completed_non_created,
+                        "failed_non_created": failed_non_created
+                    }
+
+                try:
+                    # Send progress
+                    pause_state = get_pause_state(batch_id)
+                    progress_data = {
+                        "type": "progress",
+                        "batchId": batch_id,
+                        "phase": "retry_non_created",
+                        "currentRecordId": str(report_record["_id"]),
+                        "completed": completed_non_created,
+                        "failed": failed_non_created,
+                        "total": total_non_created,
+                        "percentage": round((completed_non_created / total_non_created) * 100, 2) if total_non_created > 0 else 0,
+                        "paused": pause_state.get("paused", False),
+                        "message": f"Creating report {completed_non_created + 1}/{total_non_created}"
+                    }
+                    print(json.dumps(progress_data), flush=True)
+
+                    # Create report and collect macro (same as ElRajhiFiller)
+                    result = await create_report_and_collect_macro(
+                        main_page,
+                        report_record,
+                        create_url,
+                    )
+
+                    if result.get("status") == "SUCCESS":
+                        macros_to_fill.append({
+                            "macro_id": result["macro_id"],
+                            "macro_data": result["macro_data"],
+                            "report_id": result["report_id"],
+                            "record_id": result["record_id"]
+                        })
+                        completed_non_created += 1
+                        retry_results.append({
+                            **result,
+                            "type": "non_created"
+                        })
+                    else:
+                        failed_non_created += 1
+                        retry_results.append({
+                            **result,
+                            "type": "non_created"
+                        })
+
+                    # Send progress after processing
+                    pause_state = get_pause_state(batch_id)
+                    progress_data = {
+                        "type": "progress",
+                        "batchId": batch_id,
+                        "phase": "retry_non_created",
+                        "currentRecordId": str(report_record["_id"]),
+                        "completed": completed_non_created,
+                        "failed": failed_non_created,
+                        "total": total_non_created,
+                        "percentage": round((completed_non_created / total_non_created) * 100, 2) if total_non_created > 0 else 0,
+                        "paused": pause_state.get("paused", False),
+                        "message": f"Created report {completed_non_created}/{total_non_created}",
+                        "status": result.get("status"),
+                        "report_id": result.get("report_id")
+                    }
+                    print(json.dumps(progress_data), flush=True)
+
+                except Exception as e:
+                    failed_non_created += 1
+                    error_result = {
+                        "status": "FAILED",
+                        "type": "non_created",
+                        "error": str(e),
+                        "record_id": str(report_record["_id"])
+                    }
+                    retry_results.append(error_result)
+
+                    # Send error progress
+                    pause_state = get_pause_state(batch_id)
+                    error_data = {
+                        "type": "progress",
+                        "batchId": batch_id,
+                        "phase": "retry_non_created",
+                        "currentRecordId": str(report_record["_id"]),
+                        "completed": completed_non_created,
+                        "failed": failed_non_created,
+                        "total": total_non_created,
+                        "percentage": round((completed_non_created / total_non_created) * 100, 2) if total_non_created > 0 else 0,
+                        "paused": pause_state.get("paused", False),
+                        "message": f"Error creating report: {str(e)}",
+                        "status": "FAILED"
+                    }
+                    print(json.dumps(error_data), flush=True)
+
+            print(f"Phase 2 complete: Created {completed_non_created} reports, {failed_non_created} failed")
+
+        # ===== PHASE 3: Fill all collected macros in parallel =====
+        if macros_to_fill:
+            tabs_num = max(1, min(int(tabs_num or 1), len(macros_to_fill)))
+            pages = [main_page] + [await browser.get("", new_tab=True) for _ in range(tabs_num - 1)]
+
+            macro_chunks = balanced_chunks(macros_to_fill, tabs_num)
+
+            completed_macros = 0
+            failed_macros = 0
+            total_macros = len(macros_to_fill)
+            completed_lock = asyncio.Lock()
+
+            # Send macro filling phase start
+            macro_phase_progress = {
+                "type": "progress",
+                "batchId": batch_id,
+                "phase": "macro_filling",
+                "completed": 0,
+                "failed": 0,
+                "total": total_macros,
+                "percentage": 0,
+                "paused": False,
+                "message": f"Starting macro filling phase with {tabs_num} tabs..."
+            }
+            print(json.dumps(macro_phase_progress), flush=True)
+
+            async def process_macro_chunk(macro_chunk, page, chunk_index):
+                nonlocal completed_macros, failed_macros, finalized_reports, finalization_failed
+
+                for macro_info in macro_chunk:
+                    # Check pause/stop state
+                    pause_check = await check_pause_state(batch_id)
+                    if pause_check["action"] == "stop":
+                        print(f"Macro chunk {chunk_index} stopped by user request")
+                        return
+
+                    try:
+                        # Send progress before filling
+                        async with completed_lock:
+                            current_completed = completed_macros
+                            current_failed = failed_macros
+
+                        pause_state = get_pause_state(batch_id)
+                        progress_data = {
+                            "type": "progress",
+                            "batchId": batch_id,
+                            "phase": "macro_filling",
+                            "currentMacroId": macro_info["macro_id"],
+                            "completed": current_completed,
+                            "failed": current_failed,
+                            "total": total_macros,
+                            "percentage": round((current_completed / total_macros) * 100, 2),
+                            "paused": pause_state.get("paused", False),
+                            "message": f"Filling macro {current_completed + 1}/{total_macros}"
+                        }
+                        print(json.dumps(progress_data), flush=True)
+
+                        # Fill the macro
+                        macro_result = await fill_macro_form(
+                            page,
+                            macro_id=macro_info["macro_id"],
+                            macro_data=macro_info["macro_data"],
+                            field_map=macro_form_config["field_map"],
+                            field_types=macro_form_config["field_types"],
+                        )
+
+                        # Finalize submission if requested
+                        finalization_result = None
+                        if finalize_submission:
+                            report_id_for_macro = macro_info.get("report_id")
+                            if report_id_for_macro:
+                                finalization_result = await finalize_report_submission(page, report_id_for_macro)
+                                if finalization_result.get("status") == "SUCCESS":
+                                    finalized_reports += 1
+                                else:
+                                    finalization_failed += 1
+                            else:
+                                finalization_failed += 1
+                                finalization_result = {"status": "FAILED", "error": "Missing report_id"}
+
+                        async with completed_lock:
+                            if isinstance(macro_result, dict) and macro_result.get("status") == "FAILED":
+                                failed_macros += 1
+                            completed_macros += 1
+                            current_completed = completed_macros
+                            current_failed = failed_macros
+
+                        # Send progress after filling
+                        pause_state = get_pause_state(batch_id)
+                        progress_data = {
+                            "type": "progress",
+                            "batchId": batch_id,
+                            "phase": "macro_filling",
+                            "currentMacroId": macro_info["macro_id"],
+                            "completed": current_completed,
+                            "failed": current_failed,
+                            "total": total_macros,
+                            "percentage": round((current_completed / total_macros) * 100, 2),
+                            "paused": pause_state.get("paused", False),
+                            "message": f"Filled macro {current_completed}/{total_macros}",
+                            "status": macro_result.get("status") if isinstance(macro_result, dict) else "SUCCESS",
+                            "finalizationStatus": finalization_result.get("status") if finalization_result else None,
+                            "finalizationError": finalization_result.get("error") if finalization_result else None,
+                            "report_id": macro_info.get("report_id")
+                        }
+                        print(json.dumps(progress_data), flush=True)
+
+                    except Exception as e:
+                        async with completed_lock:
+                            failed_macros += 1
+                            completed_macros += 1
+                            current_completed = completed_macros
+                            current_failed = failed_macros
+
+                        # Send error progress
+                        pause_state = get_pause_state(batch_id)
+                        error_data = {
+                            "type": "progress",
+                            "batchId": batch_id,
+                            "phase": "macro_filling",
+                            "currentMacroId": macro_info["macro_id"],
+                            "completed": current_completed,
+                            "failed": current_failed,
+                            "total": total_macros,
+                            "percentage": round((current_completed / total_macros) * 100, 2),
+                            "paused": pause_state.get("paused", False),
+                            "message": f"Error filling macro: {str(e)}",
+                            "status": "FAILED"
+                        }
+                        print(json.dumps(error_data), flush=True)
+
+            # Create tasks for parallel macro filling
+            tasks = []
+            for i, (page, macro_chunk) in enumerate(zip(pages, macro_chunks)):
+                if macro_chunk:
+                    tasks.append(process_macro_chunk(macro_chunk, page, i))
+
+            await asyncio.gather(*tasks)
+
+            # Close extra tabs
+            for page in pages[1:]:
+                await page.close()
+
+            print(f"Phase 3 complete: Filled {completed_macros} macros ({failed_macros} failed)")
+
+        # Clear pause state after completion
+        clear_pause_state(batch_id)
+
+        return {
+            "status": "SUCCESS",
+            "message": "Completed retry processing",
+            "incomplete_processed": completed_incomplete,
+            "incomplete_failed": failed_incomplete,
+            "non_created_processed": completed_non_created,
+            "non_created_failed": failed_non_created,
+            "macros_filled": completed_macros if macros_to_fill else 0,
+            "macros_failed": failed_macros if macros_to_fill else 0,
+            "reports_finalized": finalized_reports if finalize_submission and macros_to_fill else 0,
+            "finalization_failed": finalization_failed if finalize_submission and macros_to_fill else 0,
+            "total_incomplete": total_incomplete,
+            "total_non_created": total_non_created,
+            "results": retry_results
+        }
+
+    except Exception as e:
+        tb = traceback.format_exc()
+        
+        # Clear pause state on error
+        clear_pause_state(batch_id)
+        
+        return {"status": "FAILED", "error": str(e), "traceback": tb}
+
+        
 
 async def pause_batch(batch_id):
     """Pause batch processing"""
