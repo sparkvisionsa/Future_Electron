@@ -644,13 +644,13 @@ async def ElrajhiRetry(browser, batch_id, tabs_num=3, pdf_only=False, company_ur
         # Filter incomplete records: have report_id but submit_state is 0
         incomplete_records = [
             rec for rec in report_records
-            if rec.get("report_id") and rec.get("submit_state") == 0
+            if rec.get("report_id") and len(rec["report_id"]) >= 7 and rec.get("submit_state") == 0
         ]
 
         # Filter non-created records: no report_id at all
         non_created_records = [
             rec for rec in report_records
-            if not rec.get("report_id")
+            if not rec.get("report_id") or len(rec.get("report_id")) < 7
         ]
 
         if pdf_only:
