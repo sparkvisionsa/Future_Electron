@@ -8,7 +8,10 @@ import {
     List,
     Database,
     RotateCcw,
-    Search // Added for check missing pages icon
+    Search,
+    Pause,
+    Play,
+    StopCircle
 } from "lucide-react";
 
 import { checkMissingPages } from "../../api/report";
@@ -23,6 +26,7 @@ const GrabMacroIds = () => {
 
     // Error state
     const [error, setError] = useState("");
+    const [successMessage, setSuccessMessage] = useState("");
     const [missingPagesInfo, setMissingPagesInfo] = useState(null);
 
     // Grabbing state
@@ -31,6 +35,10 @@ const GrabMacroIds = () => {
     const [isCheckingMissingPages, setIsCheckingMissingPages] = useState(false);
     const [grabResult, setGrabResult] = useState(null);
     const [macroIds, setMacroIds] = useState([]);
+
+    // Control state
+    const [isProcessPaused, setIsProcessPaused] = useState(false);
+    const [activeProcessType, setActiveProcessType] = useState(null); // 'grab' or 'retry'
 
     // Handle macro IDs grabbing using Electron IPC
     const handleGrabMacroIds = async () => {
@@ -46,8 +54,12 @@ const GrabMacroIds = () => {
         }
 
         setError("");
+        setSuccessMessage("");
         setMissingPagesInfo(null);
+        setIsProcessPaused(false);
+
         setIsGrabbingMacros(true);
+        setActiveProcessType('grab');
         setCurrentStep('grabbing-in-progress');
 
         try {
@@ -59,10 +71,11 @@ const GrabMacroIds = () => {
 
             setGrabResult(result);
 
-            if (result.status == "SUCCESS") {
+            if (result.status === "SUCCESS") {
                 const ids = result?.macro_ids_with_pages || [];
                 setMacroIds(Array.isArray(ids) ? ids : []);
                 setCurrentStep('success');
+                setSuccessMessage("Macro IDs grabbed successfully!");
             } else {
                 setError(result.error || 'Failed to grab macro IDs');
                 setCurrentStep('error');
@@ -73,6 +86,7 @@ const GrabMacroIds = () => {
             setCurrentStep('error');
         } finally {
             setIsGrabbingMacros(false);
+            setActiveProcessType(null);
         }
     };
 
@@ -90,8 +104,12 @@ const GrabMacroIds = () => {
         }
 
         setError("");
+        setSuccessMessage("");
         setMissingPagesInfo(null);
+        setIsProcessPaused(false);
+
         setIsRetryingMacros(true);
+        setActiveProcessType('retry');
         setCurrentStep('grabbing-in-progress');
 
         try {
@@ -103,10 +121,11 @@ const GrabMacroIds = () => {
 
             setGrabResult(result);
 
-            if (result.status == "SUCCESS") {
+            if (result.status === "SUCCESS") {
                 const ids = result?.macro_ids_with_pages || [];
                 setMacroIds(Array.isArray(ids) ? ids : []);
                 setCurrentStep('success');
+                setSuccessMessage("Macro IDs retried successfully!");
             } else {
                 setError(result.error || 'Failed to retry grabbing macro IDs');
                 setCurrentStep('error');
@@ -117,6 +136,101 @@ const GrabMacroIds = () => {
             setCurrentStep('error');
         } finally {
             setIsRetryingMacros(false);
+            setActiveProcessType(null);
+        }
+    };
+
+    // Handle pause for current process
+    const handlePauseProcess = async () => {
+        if (!reportId || !activeProcessType) {
+            setError("No active process to pause");
+            return;
+        }
+
+        try {
+            let result;
+            if (activeProcessType === 'grab') {
+                result = await window.electronAPI.pauseGrabMacroIds(reportId);
+            } else if (activeProcessType === 'retry') {
+                result = await window.electronAPI.pauseRetryMacroIds(reportId);
+            }
+
+            if (result?.status === "SUCCESS") {
+                setIsProcessPaused(true);
+                setSuccessMessage(`Process paused successfully`);
+                setError("");
+            } else {
+                setError(result?.error || "Failed to pause process");
+                setSuccessMessage("");
+            }
+        } catch (err) {
+            console.error("Error pausing process:", err);
+            setError("Failed to pause process");
+            setSuccessMessage("");
+        }
+    };
+
+    // Handle resume for current process
+    const handleResumeProcess = async () => {
+        if (!reportId || !activeProcessType) {
+            setError("No active process to resume");
+            return;
+        }
+
+        try {
+            let result;
+            if (activeProcessType === 'grab') {
+                result = await window.electronAPI.resumeGrabMacroIds(reportId);
+            } else if (activeProcessType === 'retry') {
+                result = await window.electronAPI.resumeRetryMacroIds(reportId);
+            }
+
+            if (result?.status === "SUCCESS") {
+                setIsProcessPaused(false);
+                setSuccessMessage(`Process resumed successfully`);
+                setError("");
+            } else {
+                setError(result?.error || "Failed to resume process");
+                setSuccessMessage("");
+            }
+        } catch (err) {
+            console.error("Error resuming process:", err);
+            setError("Failed to resume process");
+            setSuccessMessage("");
+        }
+    };
+
+    // Handle stop for current process
+    const handleStopProcess = async () => {
+        if (!reportId || !activeProcessType) {
+            setError("No active process to stop");
+            return;
+        }
+
+        try {
+            let result;
+            if (activeProcessType === 'grab') {
+                result = await window.electronAPI.stopGrabMacroIds(reportId);
+            } else if (activeProcessType === 'retry') {
+                result = await window.electronAPI.stopRetryMacroIds(reportId);
+            }
+
+            if (result?.status === "SUCCESS") {
+                setIsProcessPaused(false);
+                setIsGrabbingMacros(false);
+                setIsRetryingMacros(false);
+                setActiveProcessType(null);
+                setCurrentStep('report-id-input');
+                setSuccessMessage(`Process stopped successfully`);
+                setError("");
+            } else {
+                setError(result?.error || "Failed to stop process");
+                setSuccessMessage("");
+            }
+        } catch (err) {
+            console.error("Error stopping process:", err);
+            setError("Failed to stop process");
+            setSuccessMessage("");
         }
     };
 
@@ -128,6 +242,7 @@ const GrabMacroIds = () => {
         }
 
         setError("");
+        setSuccessMessage("");
         setIsCheckingMissingPages(true);
 
         try {
@@ -163,12 +278,15 @@ const GrabMacroIds = () => {
         setReportId("");
         setTabsNum("1");
         setError("");
+        setSuccessMessage("");
         setIsGrabbingMacros(false);
         setIsRetryingMacros(false);
         setIsCheckingMissingPages(false);
         setGrabResult(null);
         setMacroIds([]);
         setMissingPagesInfo(null);
+        setIsProcessPaused(false);
+        setActiveProcessType(null);
     };
 
     // Handle back button
@@ -178,13 +296,16 @@ const GrabMacroIds = () => {
 
     // Handle navigation to other pages
     const handleViewReports = () => {
-        // You can use window.location or other navigation method here
         console.log("Navigate to view reports");
     };
 
     const handleGoHome = () => {
-        // You can use window.location or other navigation method here
         console.log("Navigate to home");
+    };
+
+    // Check if control buttons should be disabled
+    const areControlButtonsDisabled = () => {
+        return !activeProcessType || currentStep !== 'grabbing-in-progress';
     };
 
     return (
@@ -231,6 +352,7 @@ const GrabMacroIds = () => {
                                             onChange={(e) => {
                                                 setReportId(e.target.value);
                                                 setError("");
+                                                setSuccessMessage("");
                                                 setMissingPagesInfo(null);
                                             }}
                                             className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
@@ -253,6 +375,7 @@ const GrabMacroIds = () => {
                                             onChange={(e) => {
                                                 setTabsNum(e.target.value);
                                                 setError("");
+                                                setSuccessMessage("");
                                                 setMissingPagesInfo(null);
                                             }}
                                             className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
@@ -263,6 +386,26 @@ const GrabMacroIds = () => {
                                         </p>
                                     </div>
                                 </div>
+
+                                {/* Success Message */}
+                                {successMessage && (
+                                    <div className="rounded-lg p-4 bg-green-50 border border-green-200">
+                                        <div className="flex items-center gap-3">
+                                            <CheckCircle className="w-5 h-5 text-green-500" />
+                                            <span className="text-green-700">{successMessage}</span>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Error Message */}
+                                {error && !error.includes("No missing pages found") && (
+                                    <div className="rounded-lg p-4 bg-red-50 border border-red-200">
+                                        <div className="flex items-center gap-3">
+                                            <FileText className="w-5 h-5 text-red-500" />
+                                            <span className="text-red-700">{error}</span>
+                                        </div>
+                                    </div>
+                                )}
 
                                 {/* Action Buttons */}
                                 <div className="flex flex-col sm:flex-row gap-3 justify-center pt-2">
@@ -306,16 +449,12 @@ const GrabMacroIds = () => {
                                     </button>
                                 </div>
 
-                                {/* Error and Missing Pages Info Display */}
-                                {error && (
-                                    <div className={`rounded-lg p-4 ${error.includes("No missing pages found") ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'}`}>
+                                {/* Missing Pages Info Display */}
+                                {error && error.includes("No missing pages found") && (
+                                    <div className="rounded-lg p-4 bg-green-50 border border-green-200">
                                         <div className="flex items-center gap-3">
-                                            {error.includes("No missing pages found") ? (
-                                                <CheckCircle className="w-5 h-5 text-green-500" />
-                                            ) : (
-                                                <FileText className="w-5 h-5 text-red-500" />
-                                            )}
-                                            <span className={error.includes("No missing pages found") ? "text-green-700" : "text-red-700"}>{error}</span>
+                                            <CheckCircle className="w-5 h-5 text-green-500" />
+                                            <span className="text-green-700">{error}</span>
                                         </div>
 
                                         {/* Display missing pages details if available */}
@@ -362,21 +501,95 @@ const GrabMacroIds = () => {
                                     <RefreshCw className="w-5 h-5 text-blue-600" />
                                 </div>
                                 <div>
-                                    <h2 className="text-xl font-semibold text-gray-800">Grabbing Macro IDs</h2>
-                                    <p className="text-gray-600">Please wait while we extract macro IDs from the report...</p>
+                                    <h2 className="text-xl font-semibold text-gray-800">
+                                        {activeProcessType === 'retry' ? 'Retrying Macro IDs' : 'Grabbing Macro IDs'}
+                                    </h2>
+                                    <p className="text-gray-600">
+                                        {isProcessPaused ? 'Process is paused. Click Resume to continue.' : 'Processing in progress...'}
+                                    </p>
                                 </div>
                             </div>
 
-                            <div className="bg-blue-50 border border-blue-200 rounded-xl p-8 text-center">
-                                <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                                    <RefreshCw className="w-8 h-8 text-blue-600 animate-spin" />
+                            {/* Control Buttons */}
+                            <div className="flex flex-wrap gap-3 justify-center mb-6">
+                                <button
+                                    onClick={handlePauseProcess}
+                                    disabled={areControlButtonsDisabled() || isProcessPaused}
+                                    className="px-6 py-3 bg-yellow-500 hover:bg-yellow-600 disabled:bg-gray-300 text-white rounded-lg font-semibold flex items-center gap-2 transition-colors"
+                                >
+                                    <Pause className="w-4 h-4" />
+                                    Pause
+                                </button>
+
+                                <button
+                                    onClick={handleResumeProcess}
+                                    disabled={areControlButtonsDisabled() || !isProcessPaused}
+                                    className="px-6 py-3 bg-green-500 hover:bg-green-600 disabled:bg-gray-300 text-white rounded-lg font-semibold flex items-center gap-2 transition-colors"
+                                >
+                                    <Play className="w-4 h-4" />
+                                    Resume
+                                </button>
+
+                                <button
+                                    onClick={handleStopProcess}
+                                    disabled={areControlButtonsDisabled()}
+                                    className="px-6 py-3 bg-red-500 hover:bg-red-600 disabled:bg-gray-300 text-white rounded-lg font-semibold flex items-center gap-2 transition-colors"
+                                >
+                                    <StopCircle className="w-4 h-4" />
+                                    Stop
+                                </button>
+                            </div>
+
+                            {/* Success/Error Messages */}
+                            {successMessage && (
+                                <div className="rounded-lg p-4 bg-green-50 border border-green-200">
+                                    <div className="flex items-center gap-3">
+                                        <CheckCircle className="w-5 h-5 text-green-500" />
+                                        <span className="text-green-700">{successMessage}</span>
+                                    </div>
                                 </div>
-                                <h3 className="text-xl font-semibold text-blue-800 mb-2">Extracting Macro IDs</h3>
+                            )}
+
+                            {error && (
+                                <div className="rounded-lg p-4 bg-red-50 border border-red-200">
+                                    <div className="flex items-center gap-3">
+                                        <FileText className="w-5 h-5 text-red-500" />
+                                        <span className="text-red-700">{error}</span>
+                                    </div>
+                                </div>
+                            )}
+
+                            <div className="bg-blue-50 border border-blue-200 rounded-xl p-6 text-center">
+                                <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                                    {isProcessPaused ? (
+                                        <Pause className="w-8 h-8 text-blue-600" />
+                                    ) : (
+                                        <RefreshCw className="w-8 h-8 text-blue-600 animate-spin" />
+                                    )}
+                                </div>
+                                <h3 className="text-xl font-semibold text-blue-800 mb-2">
+                                    {isProcessPaused ? 'Process Paused' : 'Processing Report'}
+                                </h3>
                                 <p className="text-blue-600 mb-4">
-                                    Please wait while we extract macro IDs from report <strong>{reportId}</strong> with <strong>{tabsNum}</strong> tab{tabsNum !== "1" ? 's' : ''}.
+                                    {isProcessPaused
+                                        ? `The ${activeProcessType === 'retry' ? 'retry' : 'grab'} process for report ${reportId} is paused. Click Resume to continue.`
+                                        : `${activeProcessType === 'retry' ? 'Retrying' : 'Grabbing'} macro IDs from report ${reportId} with ${tabsNum} tab${tabsNum !== "1" ? 's' : ''}. Please wait...`}
                                 </p>
-                                <p className="text-sm text-blue-500">
-                                    Processing report data...
+
+                                {/* Status Indicator */}
+                                <div className={`inline-flex items-center gap-2 px-4 py-2 rounded-full ${isProcessPaused ? 'bg-yellow-100 text-yellow-800' : 'bg-blue-100 text-blue-800'}`}>
+                                    <div className={`w-2 h-2 rounded-full ${isProcessPaused ? 'bg-yellow-500' : 'bg-blue-500'}`}></div>
+                                    <span className="font-medium">
+                                        {isProcessPaused ? 'PAUSED' : 'IN PROGRESS'}
+                                    </span>
+                                </div>
+                            </div>
+
+                            {/* Information Box */}
+                            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                                <p className="text-gray-700">
+                                    <strong>Note:</strong> You can pause the process at any time and resume it later.
+                                    Clicking "Stop" will cancel the current operation and return you to the input screen.
                                 </p>
                             </div>
                         </div>

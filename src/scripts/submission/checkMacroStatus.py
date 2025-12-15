@@ -1,6 +1,13 @@
 import asyncio, traceback
 from motor.motor_asyncio import AsyncIOMotorClient
 from scripts.core.utils import wait_for_element, safe_query_selector_all, wait_for_table_rows
+from scripts.core.processControl import (
+    get_process_manager,
+    check_and_wait,
+    create_process,
+    clear_process,
+    update_progress,
+)
 
 MONGO_URI = "mongodb+srv://Aasim:userAasim123@electron.cwbi8id.mongodb.net"
 client = AsyncIOMotorClient(MONGO_URI)
@@ -12,10 +19,6 @@ async def check_incomplete_macros(browser, report_id, browsers_num=3):
         report = await db.reports.find_one({"report_id": report_id})
         if not report:
             return {"status": "FAILED", "error": f"Report {report_id} not found in reports"}
-
-        # For half check, get only incomplete macro IDs from database
-        incomplete_macro_ids = set()
-            
 
         base_url = f"https://qima.taqeem.sa/report/{report_id}"
         main_page = await browser.get(base_url)
@@ -81,6 +84,19 @@ async def check_incomplete_macros(browser, report_id, browsers_num=3):
         all_processed_macros = set()
         processed_macros_lock = asyncio.Lock()
 
+        # Process ID for pause/resume control
+        process_id = f"full-check-{report_id}"
+        process_manager = get_process_manager()
+        
+        # Create process state
+        process_state = create_process(
+            process_id=process_id,
+            process_type="full-check",
+            total=total_pages,
+            report_id=report_id,
+            browsers_num=browsers_num
+        )
+
         async def process_pages_chunk(page, page_numbers_chunk, tab_id):
             local_incomplete = []
             local_processed = set()
@@ -91,13 +107,32 @@ async def check_incomplete_macros(browser, report_id, browsers_num=3):
                 print(f"[TAB-{tab_id}] Processing page {page_num}")
                 
                 try:
+                    # Check pause/stop state
+                    action = await check_and_wait(process_id)
+                    if action == "stop":
+                        print(f"[TAB-{tab_id}] Process stopped by user request")
+                        break
+                    
                     # Navigate to the specific page
                     page_url = f"{base_url}?page={page_num}" if page_num > 1 else base_url
                     await page.get(page_url)
                     await asyncio.sleep(2)
                     
+                    # Update progress
+                    await update_progress(
+                        process_id,
+                        completed=page_num,
+                        emit=True
+                    )
+                    
                     # Inner loop for table sub-pages (internal pagination)
                     while True:
+                        # Check pause/stop state
+                        action = await check_and_wait(process_id)
+                        if action == "stop":
+                            print(f"[TAB-{tab_id}] Process stopped by user request")
+                            break
+                        
                         # Wait for table to load
                         table_ready = await wait_for_table_rows(page, timeout=100)
                         if not table_ready:
@@ -115,6 +150,12 @@ async def check_incomplete_macros(browser, report_id, browsers_num=3):
                         
                         for i in range(start_index, len(macro_cells)):
                             try:
+                                # Check pause/stop state
+                                action = await check_and_wait(process_id)
+                                if action == "stop":
+                                    print(f"[TAB-{tab_id}] Process stopped by user request")
+                                    break
+                                
                                 if i >= len(status_cells):
                                     break
                                     
@@ -132,7 +173,7 @@ async def check_incomplete_macros(browser, report_id, browsers_num=3):
                                 
                                 submit_state = 0 if "غير مكتملة" in status_text else 1
 
-                                # Update database - FIXED: More robust update logic
+                                # Update database
                                 update_result = await db.reports.update_one(
                                     {"report_id": report_id, "asset_data.id": str(macro_id)},
                                     {"$set": {"asset_data.$.submitState": submit_state}}
@@ -140,7 +181,6 @@ async def check_incomplete_macros(browser, report_id, browsers_num=3):
 
                                 # If no document was matched, try to update using array index
                                 if update_result.matched_count == 0:
-                                    # Find the index of the asset with this macro_id
                                     report_after = await db.reports.find_one({"report_id": report_id})
                                     if report_after:
                                         asset_data = report_after.get("asset_data", [])
@@ -153,7 +193,7 @@ async def check_incomplete_macros(browser, report_id, browsers_num=3):
                                                 print(f"[TAB-{tab_id}] Updated Macro {macro_id} using index {idx}")
                                                 break
 
-                                print(f"[TAB-{tab_id}] Processed Macro {macro_id} on page {page_num}, submitState={submit_state}, matched={update_result.matched_count}, modified={update_result.modified_count}")
+                                print(f"[TAB-{tab_id}] Processed Macro {macro_id} on page {page_num}, submitState={submit_state}")
 
                                 processed_count += 1
                                 
@@ -211,6 +251,9 @@ async def check_incomplete_macros(browser, report_id, browsers_num=3):
         for p in pages[1:]:
             await p.close()
 
+        # Clear process state
+        clear_process(process_id)
+
         return {
             "status": "SUCCESS",
             "incomplete_ids": incomplete_ids,
@@ -223,6 +266,9 @@ async def check_incomplete_macros(browser, report_id, browsers_num=3):
     except Exception as e:
         tb = traceback.format_exc()
         print("[CHECK] Error:", tb)
+        # Clear process state on error
+        if 'process_id' in locals():
+            clear_process(process_id)
         return {"status": "FAILED", "error": str(e), "traceback": tb}
 
 async def half_check_incomplete_macros(browser, report_id, browsers_num=3):
@@ -250,7 +296,6 @@ async def half_check_incomplete_macros(browser, report_id, browsers_num=3):
             return {"status": "SUCCESS", "incomplete_ids": [], "macro_count": 0, "message": "All macros complete"}
 
         # Collect incomplete macro IDs and their page numbers
-        # FIX: Convert to integers for consistent comparison
         incomplete_macro_ids = set()
         incomplete_page_numbers = set()
         
@@ -366,6 +411,21 @@ async def half_check_incomplete_macros(browser, report_id, browsers_num=3):
         all_processed_macros = set()
         processed_macros_lock = asyncio.Lock()
 
+        # Process ID for pause/resume control
+        process_id = f"half-check-{report_id}"
+        process_manager = get_process_manager()
+        
+        # Create process state
+        process_state = create_process(
+            process_id=process_id,
+            process_type="half-check",
+            total=len(target_pages),
+            report_id=report_id,
+            browsers_num=browsers_num,
+            target_pages_count=len(target_pages),
+            incomplete_macros_count=len(incomplete_macro_ids)
+        )
+
         async def process_pages_chunk(page, page_numbers_chunk, tab_id):
             local_incomplete = []
             local_processed = set()
@@ -373,17 +433,36 @@ async def half_check_incomplete_macros(browser, report_id, browsers_num=3):
             
             print(f"[HALF-TAB-{tab_id}] Processing pages: {page_numbers_chunk}")
             
-            for page_num in page_numbers_chunk:
+            for page_num_idx, page_num in enumerate(page_numbers_chunk):
                 print(f"[HALF-TAB-{tab_id}] Processing page {page_num}")
                 
                 try:
+                    # Check pause/stop state
+                    action = await check_and_wait(process_id)
+                    if action == "stop":
+                        print(f"[HALF-TAB-{tab_id}] Process stopped by user request")
+                        break
+                    
                     # Navigate to the specific page
                     page_url = f"{base_url}?page={page_num}" if page_num > 1 else base_url
                     await page.get(page_url)
                     await asyncio.sleep(2)
                     
+                    # Update progress
+                    await update_progress(
+                        process_id,
+                        completed=page_num_idx + 1,
+                        emit=True
+                    )
+                    
                     # Inner loop for table sub-pages (internal pagination) - same as full check
                     while True:
+                        # Check pause/stop state
+                        action = await check_and_wait(process_id)
+                        if action == "stop":
+                            print(f"[HALF-TAB-{tab_id}] Process stopped by user request")
+                            break
+                        
                         # Wait for table to load
                         table_ready = await wait_for_table_rows(page, timeout=100)
                         if not table_ready:
@@ -399,6 +478,12 @@ async def half_check_incomplete_macros(browser, report_id, browsers_num=3):
                         
                         for i in range(len(macro_cells)):
                             try:
+                                # Check pause/stop state
+                                action = await check_and_wait(process_id)
+                                if action == "stop":
+                                    print(f"[HALF-TAB-{tab_id}] Process stopped by user request")
+                                    break
+                                
                                 if i >= len(status_cells):
                                     break
                                     
@@ -441,7 +526,7 @@ async def half_check_incomplete_macros(browser, report_id, browsers_num=3):
                                                 print(f"[HALF-TAB-{tab_id}] Updated Macro {macro_id} using index {idx}")
                                                 break
 
-                                print(f"[HALF-TAB-{tab_id}] Processed Macro {macro_id} on page {page_num}, submitState={submit_state}, matched={update_result.matched_count}")
+                                print(f"[HALF-TAB-{tab_id}] Processed Macro {macro_id} on page {page_num}, submitState={submit_state}")
 
                                 processed_count += 1
                                 
@@ -513,6 +598,9 @@ async def half_check_incomplete_macros(browser, report_id, browsers_num=3):
                 )
                 print(f"[HALF CHECK] Marked missing macro {macro_id} as complete")
 
+        # Clear process state
+        clear_process(process_id)
+
         # Return same format as full check
         return {
             "status": "SUCCESS",
@@ -527,6 +615,9 @@ async def half_check_incomplete_macros(browser, report_id, browsers_num=3):
     except Exception as e:
         tb = traceback.format_exc()
         print("[HALF CHECK] Error:", tb)
+        # Clear process state on error
+        if 'process_id' in locals():
+            clear_process(process_id)
         return {"status": "FAILED", "error": str(e), "traceback": tb}
 
 async def RunCheckMacroStatus(browser, report_id, tabs_num=3):
@@ -538,3 +629,132 @@ async def RunHalfCheckMacroStatus(browser, report_id, tabs_num=3):
     """Optimized half check - only processes pages with incomplete macros"""
     result = await half_check_incomplete_macros(browser, report_id, tabs_num)
     return result
+
+# ==============================
+# Pause/Resume/Stop handlers for both full and half checks
+# ==============================
+
+async def pause_full_check(report_id):
+    """Pause full check process"""
+    try:
+        process_manager = get_process_manager()
+        state = process_manager.pause_process(f"full-check-{report_id}")
+        
+        if not state:
+            return {
+                "status": "FAILED",
+                "error": f"No active full check process found for report {report_id}"
+            }
+        
+        return {
+            "status": "SUCCESS",
+            "message": f"Paused full check for report {report_id}",
+            "paused": state.paused
+        }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}
+
+
+async def resume_full_check(report_id):
+    """Resume full check process"""
+    try:
+        process_manager = get_process_manager()
+        state = process_manager.resume_process(f"full-check-{report_id}")
+        
+        if not state:
+            return {
+                "status": "FAILED",
+                "error": f"No active full check process found for report {report_id}"
+            }
+        
+        return {
+            "status": "SUCCESS",
+            "message": f"Resumed full check for report {report_id}",
+            "paused": state.paused
+        }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}
+
+
+async def stop_full_check(report_id):
+    """Stop full check process"""
+    try:
+        process_manager = get_process_manager()
+        state = process_manager.stop_process(f"full-check-{report_id}")
+        
+        if not state:
+            return {
+                "status": "FAILED",
+                "error": f"No active full check process found for report {report_id}"
+            }
+        
+        return {
+            "status": "SUCCESS",
+            "message": f"Stopped full check for report {report_id}",
+            "stopped": state.stopped
+        }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}
+
+
+async def pause_half_check(report_id):
+    """Pause half check process"""
+    try:
+        process_manager = get_process_manager()
+        state = process_manager.pause_process(f"half-check-{report_id}")
+        
+        if not state:
+            return {
+                "status": "FAILED",
+                "error": f"No active half check process found for report {report_id}"
+            }
+        
+        return {
+            "status": "SUCCESS",
+            "message": f"Paused half check for report {report_id}",
+            "paused": state.paused
+        }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}
+
+
+async def resume_half_check(report_id):
+    """Resume half check process"""
+    try:
+        process_manager = get_process_manager()
+        state = process_manager.resume_process(f"half-check-{report_id}")
+        
+        if not state:
+            return {
+                "status": "FAILED",
+                "error": f"No active half check process found for report {report_id}"
+            }
+        
+        return {
+            "status": "SUCCESS",
+            "message": f"Resumed half check for report {report_id}",
+            "paused": state.paused
+        }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}
+
+
+async def stop_half_check(report_id):
+    """Stop half check process"""
+    try:
+        process_manager = get_process_manager()
+        state = process_manager.stop_process(f"half-check-{report_id}")
+        
+        if not state:
+            return {
+                "status": "FAILED",
+                "error": f"No active half check process found for report {report_id}"
+            }
+        
+        return {
+            "status": "SUCCESS",
+            "message": f"Stopped half check for report {report_id}",
+            "stopped": state.stopped
+        }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}

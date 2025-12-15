@@ -6,12 +6,21 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from .formSteps import form_steps, macro_form_config
 from .formFiller import fill_form
 from .macroFiller import fill_macro_form
-from scripts.core.utils import wait_for_element, wait_for_table_rows
+from scripts.core.utils import wait_for_element, wait_for_table_rows, log
 
 from scripts.core.company_context import (
     build_report_create_url,
     require_selected_company,
     set_selected_company,
+)
+
+from scripts.core.processControl import (
+    get_process_manager,
+    check_and_wait,
+    create_process,
+    clear_process,
+    update_progress,
+    emit_progress
 )
 
 MONGO_URI = "mongodb+srv://Aasim:userAasim123@electron.cwbi8id.mongodb.net"
@@ -275,6 +284,10 @@ async def finalize_report_submission(page, report_id):
 
 async def ElRajhiFiller(browser, batch_id, tabs_num=3, pdf_only=False, company_url=None, finalize_submission=True):
     try:
+        # Create process for this batch
+        process_id = f"elrajhi-filler-{batch_id}"
+        process_manager = get_process_manager()
+        
         # Fetch all report records with this batch_id
         cursor = db.urgentreports.find({"batch_id": batch_id})
         raw_records = await cursor.to_list(length=None)
@@ -316,14 +329,23 @@ async def ElRajhiFiller(browser, batch_id, tabs_num=3, pdf_only=False, company_u
 
         total_reports = len(report_records)
         
+        # Create process state
+        process_state = create_process(
+            process_id=process_id,
+            process_type="elrajhi-filler",
+            total=total_reports,
+            batch_id=batch_id,
+            tabs_num=tabs_num,
+            pdf_only=pdf_only,
+            finalize_submission=finalize_submission,
+            company_url=company_url
+        )
+        
         # Update start time for all reports in batch
         await db.urgentreports.update_many(
             {"batch_id": batch_id},
             {"$set": {"startSubmitTime": datetime.now(timezone.utc)}}
         )
-
-        # Initialize pause state
-        set_pause_state(batch_id, paused=False, stopped=False)
 
         # Use single tab for report creation
         main_page = browser.tabs[0]
@@ -337,27 +359,16 @@ async def ElRajhiFiller(browser, batch_id, tabs_num=3, pdf_only=False, company_u
         finalized_reports = 0
         finalization_failed = 0
 
-        # Send initial progress
-        initial_progress = {
-            "type": "progress",
-            "batchId": batch_id,
-            "phase": "report_creation",
-            "completed": 0,
-            "failed": 0,
-            "total": total_reports,
-            "percentage": 0,
-            "paused": False,
-            "message": "Starting report creation phase..."
-        }
-        print(json.dumps(initial_progress), flush=True)
+        # Send initial progress using process controller
+        emit_progress(process_id, message="Starting report creation phase...")
 
         # Phase 1: Create all reports sequentially and collect macro IDs
         for idx, report_record in enumerate(report_records):
-            # Check pause/stop state
-            pause_check = await check_pause_state(batch_id)
-            if pause_check["action"] == "stop":
-                print(f"Report creation stopped by user request")
-                clear_pause_state(batch_id)
+            # Check pause/stop state using process controller
+            action = await check_and_wait(process_id)
+            if action == "stop":
+                log(f"Report creation stopped by user request for batch {batch_id}", "INFO")
+                clear_process(process_id)
                 return {
                     "status": "STOPPED",
                     "message": "Report creation stopped by user",
@@ -367,21 +378,17 @@ async def ElRajhiFiller(browser, batch_id, tabs_num=3, pdf_only=False, company_u
                 }
             
             try:
-                # Send progress before processing
-                pause_state = get_pause_state(batch_id)
-                progress_data = {
-                    "type": "progress",
-                    "batchId": batch_id,
-                    "phase": "report_creation",
-                    "currentRecordId": str(report_record["_id"]),
-                    "completed": completed_reports,
-                    "failed": failed_reports,
-                    "total": total_reports,
-                    "percentage": round((completed_reports / total_reports) * 100, 2),
-                    "paused": pause_state.get("paused", False),
-                    "message": f"Creating report {completed_reports + 1}/{total_reports}"
-                }
-                print(json.dumps(progress_data), flush=True)
+                # Update progress before processing
+                await update_progress(
+                    process_id,
+                    completed=completed_reports,
+                    failed=failed_reports
+                )
+                emit_progress(
+                    process_id,
+                    current_item=str(report_record["_id"]),
+                    message=f"Creating report {completed_reports + 1}/{total_reports}"
+                )
                 
                 # Create report and collect macro ID
                 result = await create_report_and_collect_macro(
@@ -404,23 +411,17 @@ async def ElRajhiFiller(browser, batch_id, tabs_num=3, pdf_only=False, company_u
                 
                 report_creation_results.append(result)
                 
-                # Send progress after processing
-                pause_state = get_pause_state(batch_id)
-                progress_data = {
-                    "type": "progress",
-                    "batchId": batch_id,
-                    "phase": "report_creation",
-                    "currentRecordId": str(report_record["_id"]),
-                    "completed": completed_reports,
-                    "failed": failed_reports,
-                    "total": total_reports,
-                    "percentage": round((completed_reports / total_reports) * 100, 2),
-                    "paused": pause_state.get("paused", False),
-                    "message": f"Created report {completed_reports}/{total_reports}",
-                    "status": result.get("status"),
-                    "report_id": result.get("report_id")
-                }
-                print(json.dumps(progress_data), flush=True)
+                # Update progress after processing
+                await update_progress(
+                    process_id,
+                    completed=completed_reports,
+                    failed=failed_reports
+                )
+                emit_progress(
+                    process_id,
+                    current_item=str(report_record["_id"]),
+                    message=f"Created report {completed_reports}/{total_reports}"
+                )
                 
             except Exception as e:
                 failed_reports += 1
@@ -431,27 +432,26 @@ async def ElRajhiFiller(browser, batch_id, tabs_num=3, pdf_only=False, company_u
                 }
                 report_creation_results.append(error_result)
                 
-                # Send error progress
-                pause_state = get_pause_state(batch_id)
-                error_data = {
-                    "type": "progress",
-                    "batchId": batch_id,
-                    "phase": "report_creation",
-                    "currentRecordId": str(report_record["_id"]),
-                    "completed": completed_reports,
-                    "failed": failed_reports,
-                    "total": total_reports,
-                    "percentage": round((completed_reports / total_reports) * 100, 2),
-                    "paused": pause_state.get("paused", False),
-                    "message": f"Error creating report: {str(e)}",
-                    "status": "FAILED"
-                }
-                print(json.dumps(error_data), flush=True)
+                # Update progress on error
+                await update_progress(
+                    process_id,
+                    completed=completed_reports,
+                    failed=failed_reports
+                )
+                emit_progress(
+                    process_id,
+                    current_item=str(report_record["_id"]),
+                    message=f"Error creating report: {str(e)}"
+                )
 
-        print(f"Phase 1 complete: Created {completed_reports} reports, collected {len(macros_to_fill)} macros to fill")
+        log(f"Phase 1 complete: Created {completed_reports} reports, collected {len(macros_to_fill)} macros to fill", "INFO")
 
         # Phase 2: Fill all macros in parallel using multiple tabs
         if macros_to_fill:
+            # Update process for macro filling phase
+            process_state.total += len(macros_to_fill)  # Add macros to total count
+            process_state.metadata["phase"] = "macro_filling"
+            
             # Create additional tabs for parallel macro filling
             tabs_num = max(1, min(int(tabs_num or 1), len(macros_to_fill)))
             pages = [main_page] + [await browser.get("", new_tab=True) for _ in range(tabs_num - 1)]
@@ -465,50 +465,30 @@ async def ElRajhiFiller(browser, batch_id, tabs_num=3, pdf_only=False, company_u
             completed_lock = asyncio.Lock()
             
             # Send macro filling phase start
-            macro_phase_progress = {
-                "type": "progress",
-                "batchId": batch_id,
-                "phase": "macro_filling",
-                "completed": 0,
-                "failed": 0,
-                "total": total_macros,
-                "percentage": 0,
-                "paused": False,
-                "message": f"Starting macro filling phase with {tabs_num} tabs..."
-            }
-            print(json.dumps(macro_phase_progress), flush=True)
+            emit_progress(process_id, message=f"Starting macro filling phase with {tabs_num} tabs...")
             
             async def process_macro_chunk(macro_chunk, page, chunk_index):
                 nonlocal completed_macros, failed_macros, finalized_reports, finalization_failed
-                print(f"Processing macro chunk {chunk_index} with {len(macro_chunk)} macros")
+                log(f"Processing macro chunk {chunk_index} with {len(macro_chunk)} macros", "INFO")
                 
                 for macro_info in macro_chunk:
                     # Check pause/stop state
-                    pause_check = await check_pause_state(batch_id)
-                    if pause_check["action"] == "stop":
-                        print(f"Macro chunk {chunk_index} stopped by user request")
+                    action = await check_and_wait(process_id)
+                    if action == "stop":
+                        log(f"Macro chunk {chunk_index} stopped by user request", "INFO")
                         return
                     
                     try:
-                        # Send progress before filling
+                        # Update progress before filling
                         async with completed_lock:
                             current_completed = completed_macros
                             current_failed = failed_macros
                         
-                        pause_state = get_pause_state(batch_id)
-                        progress_data = {
-                            "type": "progress",
-                            "batchId": batch_id,
-                            "phase": "macro_filling",
-                            "currentMacroId": macro_info["macro_id"],
-                            "completed": current_completed,
-                            "failed": current_failed,
-                            "total": total_macros,
-                            "percentage": round((current_completed / total_macros) * 100, 2),
-                            "paused": pause_state.get("paused", False),
-                            "message": f"Filling macro {current_completed + 1}/{total_macros}"
-                        }
-                        print(json.dumps(progress_data), flush=True)
+                        emit_progress(
+                            process_id,
+                            current_item=macro_info["macro_id"],
+                            message=f"Filling macro {current_completed + 1}/{total_macros}"
+                        )
                         
                         # Fill the macro
                         macro_result = await fill_macro_form(
@@ -540,25 +520,18 @@ async def ElRajhiFiller(browser, batch_id, tabs_num=3, pdf_only=False, company_u
                             current_completed = completed_macros
                             current_failed = failed_macros
                         
-                        # Send progress after filling
-                        pause_state = get_pause_state(batch_id)
-                        progress_data = {
-                            "type": "progress",
-                            "batchId": batch_id,
-                            "phase": "macro_filling",
-                            "currentMacroId": macro_info["macro_id"],
-                            "completed": current_completed,
-                            "failed": current_failed,
-                            "total": total_macros,
-                            "percentage": round((current_completed / total_macros) * 100, 2),
-                            "paused": pause_state.get("paused", False),
-                            "message": f"Filled macro {current_completed}/{total_macros}",
-                            "status": macro_result.get("status") if isinstance(macro_result, dict) else "SUCCESS",
-                            "finalizationStatus": finalization_result.get("status") if finalization_result else None,
-                            "finalizationError": finalization_result.get("error") if finalization_result else None,
-                            "report_id": macro_info.get("report_id")
-                        }
-                        print(json.dumps(progress_data), flush=True)
+                        # Update overall progress (reports + macros)
+                        await update_progress(
+                            process_id,
+                            completed=completed_reports + current_completed,
+                            failed=failed_reports + current_failed
+                        )
+                        
+                        emit_progress(
+                            process_id,
+                            current_item=macro_info["macro_id"],
+                            message=f"Filled macro {current_completed}/{total_macros}"
+                        )
                         
                     except Exception as e:
                         async with completed_lock:
@@ -567,22 +540,17 @@ async def ElRajhiFiller(browser, batch_id, tabs_num=3, pdf_only=False, company_u
                             current_completed = completed_macros
                             current_failed = failed_macros
                         
-                        # Send error progress
-                        pause_state = get_pause_state(batch_id)
-                        error_data = {
-                            "type": "progress",
-                            "batchId": batch_id,
-                            "phase": "macro_filling",
-                            "currentMacroId": macro_info["macro_id"],
-                            "completed": current_completed,
-                            "failed": current_failed,
-                            "total": total_macros,
-                            "percentage": round((current_completed / total_macros) * 100, 2),
-                            "paused": pause_state.get("paused", False),
-                            "message": f"Error filling macro: {str(e)}",
-                            "status": "FAILED"
-                        }
-                        print(json.dumps(error_data), flush=True)
+                        # Update progress on error
+                        await update_progress(
+                            process_id,
+                            completed=completed_reports + current_completed,
+                            failed=failed_reports + current_failed
+                        )
+                        emit_progress(
+                            process_id,
+                            current_item=macro_info["macro_id"],
+                            message=f"Error filling macro: {str(e)}"
+                        )
             
             # Create tasks for parallel macro filling
             tasks = []
@@ -596,10 +564,10 @@ async def ElRajhiFiller(browser, batch_id, tabs_num=3, pdf_only=False, company_u
             for page in pages[1:]:
                 await page.close()
             
-            print(f"Phase 2 complete: Filled {completed_macros} macros ({failed_macros} failed)")
+            log(f"Phase 2 complete: Filled {completed_macros} macros ({failed_macros} failed)", "INFO")
 
-        # Clear pause state after completion
-        clear_pause_state(batch_id)
+        # Clear process state after completion
+        clear_process(process_id)
 
         return {
             "status": "SUCCESS",
@@ -617,13 +585,18 @@ async def ElRajhiFiller(browser, batch_id, tabs_num=3, pdf_only=False, company_u
     except Exception as e:
         tb = traceback.format_exc()
         
-        # Clear pause state on error
-        clear_pause_state(batch_id)
+        # Clear process state on error
+        if 'process_id' in locals():
+            clear_process(process_id)
         
         return {"status": "FAILED", "error": str(e), "traceback": tb}
     
 async def ElrajhiRetry(browser, batch_id, tabs_num=3, pdf_only=False, company_url=None, finalize_submission=False):
     try:
+        # Create process for retry
+        process_id = f"elrajhi-retry-{batch_id}"
+        process_manager = get_process_manager()
+        
         # Fetch all report records with this batch_id
         cursor = db.urgentreports.find({"batch_id": batch_id})
         raw_records = await cursor.to_list(length=None)
@@ -685,8 +658,19 @@ async def ElrajhiRetry(browser, batch_id, tabs_num=3, pdf_only=False, company_ur
         except Exception as ctx_err:
             return {"status": "FAILED", "error": str(ctx_err)}
 
-        # Initialize pause state
-        set_pause_state(batch_id, paused=False, stopped=False)
+        # Create process state
+        process_state = create_process(
+            process_id=process_id,
+            process_type="elrajhi-retry",
+            total=total_records,
+            batch_id=batch_id,
+            tabs_num=tabs_num,
+            pdf_only=pdf_only,
+            finalize_submission=finalize_submission,
+            company_url=company_url,
+            incomplete_count=total_incomplete,
+            non_created_count=total_non_created
+        )
 
         # Use single tab for report operations
         main_page = browser.tabs[0]
@@ -703,26 +687,18 @@ async def ElrajhiRetry(browser, batch_id, tabs_num=3, pdf_only=False, company_ur
         retry_results = []
 
         # Send initial progress
-        initial_progress = {
-            "type": "progress",
-            "batchId": batch_id,
-            "phase": "retry_incomplete",
-            "completed": 0,
-            "failed": 0,
-            "total": total_incomplete,
-            "percentage": 0,
-            "paused": False,
-            "message": f"Starting retry: {total_incomplete} incomplete, {total_non_created} non-created"
-        }
-        print(json.dumps(initial_progress), flush=True)
+        emit_progress(
+            process_id,
+            message=f"Starting retry: {total_incomplete} incomplete, {total_non_created} non-created"
+        )
 
         # ===== PHASE 1: Process incomplete records =====
         for idx, report_record in enumerate(incomplete_records):
             # Check pause/stop state
-            pause_check = await check_pause_state(batch_id)
-            if pause_check["action"] == "stop":
-                print(f"Retry stopped by user request during incomplete phase")
-                clear_pause_state(batch_id)
+            action = await check_and_wait(process_id)
+            if action == "stop":
+                log(f"Retry stopped by user request during incomplete phase for batch {batch_id}", "INFO")
+                clear_process(process_id)
                 return {
                     "status": "STOPPED",
                     "message": "Retry stopped by user",
@@ -735,22 +711,18 @@ async def ElrajhiRetry(browser, batch_id, tabs_num=3, pdf_only=False, company_ur
             try:
                 report_id = report_record.get("report_id")
                 
-                # Send progress
-                pause_state = get_pause_state(batch_id)
-                progress_data = {
-                    "type": "progress",
-                    "batchId": batch_id,
-                    "phase": "retry_incomplete",
-                    "currentRecordId": str(report_record["_id"]),
-                    "completed": completed_incomplete,
-                    "failed": failed_incomplete,
-                    "total": total_incomplete,
-                    "percentage": round((completed_incomplete / total_incomplete) * 100, 2) if total_incomplete > 0 else 0,
-                    "paused": pause_state.get("paused", False),
-                    "message": f"Processing incomplete report {completed_incomplete + 1}/{total_incomplete}",
-                    "report_id": report_id
-                }
-                print(json.dumps(progress_data), flush=True)
+                # Update progress
+                current_total = completed_incomplete + completed_non_created + failed_incomplete + failed_non_created
+                await update_progress(
+                    process_id,
+                    completed=current_total,
+                    failed=0
+                )
+                emit_progress(
+                    process_id,
+                    current_item=str(report_record["_id"]),
+                    message=f"Processing incomplete report {completed_incomplete + 1}/{total_incomplete}"
+                )
 
                 # Navigate to the report page
                 report_url = f"https://qima.taqeem.sa/report/{report_id}"
@@ -767,10 +739,10 @@ async def ElrajhiRetry(browser, batch_id, tabs_num=3, pdf_only=False, company_ur
                 if macro_link:
                     # Macro exists, grab the ID
                     macro_id = macro_link.text.strip()
-                    print(f"Found existing macro: {macro_id}")
+                    log(f"Found existing macro: {macro_id}", "INFO")
                 else:
                     # No macro exists, create one
-                    print(f"No macro found for report {report_id}, creating one...")
+                    log(f"No macro found for report {report_id}, creating one...", "INFO")
                     
                     # Import the create assets function
                     from .createMacros import run_create_assets
@@ -801,7 +773,7 @@ async def ElrajhiRetry(browser, batch_id, tabs_num=3, pdf_only=False, company_ur
                         raise Exception("Could not find newly created macro")
                     
                     macro_id = macro_link.text.strip()
-                    print(f"Created new macro: {macro_id}")
+                    log(f"Created new macro: {macro_id}", "INFO")
 
                 # Collect macro for filling
                 macro_data = extract_asset_from_report(report_record)
@@ -821,24 +793,18 @@ async def ElrajhiRetry(browser, batch_id, tabs_num=3, pdf_only=False, company_ur
                     "record_id": str(report_record["_id"])
                 })
 
-                # Send progress after processing
-                pause_state = get_pause_state(batch_id)
-                progress_data = {
-                    "type": "progress",
-                    "batchId": batch_id,
-                    "phase": "retry_incomplete",
-                    "currentRecordId": str(report_record["_id"]),
-                    "completed": completed_incomplete,
-                    "failed": failed_incomplete,
-                    "total": total_incomplete,
-                    "percentage": round((completed_incomplete / total_incomplete) * 100, 2) if total_incomplete > 0 else 0,
-                    "paused": pause_state.get("paused", False),
-                    "message": f"Processed incomplete report {completed_incomplete}/{total_incomplete}",
-                    "status": "SUCCESS",
-                    "report_id": report_id,
-                    "macro_id": macro_id
-                }
-                print(json.dumps(progress_data), flush=True)
+                # Update progress after processing
+                current_total = completed_incomplete + completed_non_created + failed_incomplete + failed_non_created
+                await update_progress(
+                    process_id,
+                    completed=current_total,
+                    failed=0
+                )
+                emit_progress(
+                    process_id,
+                    current_item=str(report_record["_id"]),
+                    message=f"Processed incomplete report {completed_incomplete}/{total_incomplete}"
+                )
 
             except Exception as e:
                 failed_incomplete += 1
@@ -851,46 +817,31 @@ async def ElrajhiRetry(browser, batch_id, tabs_num=3, pdf_only=False, company_ur
                 }
                 retry_results.append(error_result)
 
-                # Send error progress
-                pause_state = get_pause_state(batch_id)
-                error_data = {
-                    "type": "progress",
-                    "batchId": batch_id,
-                    "phase": "retry_incomplete",
-                    "currentRecordId": str(report_record["_id"]),
-                    "completed": completed_incomplete,
-                    "failed": failed_incomplete,
-                    "total": total_incomplete,
-                    "percentage": round((completed_incomplete / total_incomplete) * 100, 2) if total_incomplete > 0 else 0,
-                    "paused": pause_state.get("paused", False),
-                    "message": f"Error processing incomplete report: {str(e)}",
-                    "status": "FAILED"
-                }
-                print(json.dumps(error_data), flush=True)
+                # Update progress on error
+                current_total = completed_incomplete + completed_non_created + failed_incomplete + failed_non_created
+                await update_progress(
+                    process_id,
+                    completed=current_total,
+                    failed=failed_incomplete + failed_non_created
+                )
+                emit_progress(
+                    process_id,
+                    current_item=str(report_record["_id"]),
+                    message=f"Error processing incomplete report: {str(e)}"
+                )
 
-        print(f"Phase 1 complete: Processed {completed_incomplete} incomplete reports, {failed_incomplete} failed")
+        log(f"Phase 1 complete: Processed {completed_incomplete} incomplete reports, {failed_incomplete} failed", "INFO")
 
         # ===== PHASE 2: Process non-created records =====
         if non_created_records:
-            non_created_progress = {
-                "type": "progress",
-                "batchId": batch_id,
-                "phase": "retry_non_created",
-                "completed": 0,
-                "failed": 0,
-                "total": total_non_created,
-                "percentage": 0,
-                "paused": False,
-                "message": f"Starting non-created reports phase..."
-            }
-            print(json.dumps(non_created_progress), flush=True)
+            emit_progress(process_id, message=f"Starting non-created reports phase...")
 
             for idx, report_record in enumerate(non_created_records):
                 # Check pause/stop state
-                pause_check = await check_pause_state(batch_id)
-                if pause_check["action"] == "stop":
-                    print(f"Retry stopped by user request during non-created phase")
-                    clear_pause_state(batch_id)
+                action = await check_and_wait(process_id)
+                if action == "stop":
+                    log(f"Retry stopped by user request during non-created phase for batch {batch_id}", "INFO")
+                    clear_process(process_id)
                     return {
                         "status": "STOPPED",
                         "message": "Retry stopped by user",
@@ -901,21 +852,18 @@ async def ElrajhiRetry(browser, batch_id, tabs_num=3, pdf_only=False, company_ur
                     }
 
                 try:
-                    # Send progress
-                    pause_state = get_pause_state(batch_id)
-                    progress_data = {
-                        "type": "progress",
-                        "batchId": batch_id,
-                        "phase": "retry_non_created",
-                        "currentRecordId": str(report_record["_id"]),
-                        "completed": completed_non_created,
-                        "failed": failed_non_created,
-                        "total": total_non_created,
-                        "percentage": round((completed_non_created / total_non_created) * 100, 2) if total_non_created > 0 else 0,
-                        "paused": pause_state.get("paused", False),
-                        "message": f"Creating report {completed_non_created + 1}/{total_non_created}"
-                    }
-                    print(json.dumps(progress_data), flush=True)
+                    # Update progress
+                    current_total = completed_incomplete + completed_non_created + failed_incomplete + failed_non_created
+                    await update_progress(
+                        process_id,
+                        completed=current_total,
+                        failed=failed_incomplete + failed_non_created
+                    )
+                    emit_progress(
+                        process_id,
+                        current_item=str(report_record["_id"]),
+                        message=f"Creating report {completed_non_created + 1}/{total_non_created}"
+                    )
 
                     # Create report and collect macro (same as ElRajhiFiller)
                     result = await create_report_and_collect_macro(
@@ -943,23 +891,18 @@ async def ElrajhiRetry(browser, batch_id, tabs_num=3, pdf_only=False, company_ur
                             "type": "non_created"
                         })
 
-                    # Send progress after processing
-                    pause_state = get_pause_state(batch_id)
-                    progress_data = {
-                        "type": "progress",
-                        "batchId": batch_id,
-                        "phase": "retry_non_created",
-                        "currentRecordId": str(report_record["_id"]),
-                        "completed": completed_non_created,
-                        "failed": failed_non_created,
-                        "total": total_non_created,
-                        "percentage": round((completed_non_created / total_non_created) * 100, 2) if total_non_created > 0 else 0,
-                        "paused": pause_state.get("paused", False),
-                        "message": f"Created report {completed_non_created}/{total_non_created}",
-                        "status": result.get("status"),
-                        "report_id": result.get("report_id")
-                    }
-                    print(json.dumps(progress_data), flush=True)
+                    # Update progress after processing
+                    current_total = completed_incomplete + completed_non_created + failed_incomplete + failed_non_created
+                    await update_progress(
+                        process_id,
+                        completed=current_total,
+                        failed=failed_incomplete + failed_non_created
+                    )
+                    emit_progress(
+                        process_id,
+                        current_item=str(report_record["_id"]),
+                        message=f"Created report {completed_non_created}/{total_non_created}"
+                    )
 
                 except Exception as e:
                     failed_non_created += 1
@@ -971,27 +914,27 @@ async def ElrajhiRetry(browser, batch_id, tabs_num=3, pdf_only=False, company_ur
                     }
                     retry_results.append(error_result)
 
-                    # Send error progress
-                    pause_state = get_pause_state(batch_id)
-                    error_data = {
-                        "type": "progress",
-                        "batchId": batch_id,
-                        "phase": "retry_non_created",
-                        "currentRecordId": str(report_record["_id"]),
-                        "completed": completed_non_created,
-                        "failed": failed_non_created,
-                        "total": total_non_created,
-                        "percentage": round((completed_non_created / total_non_created) * 100, 2) if total_non_created > 0 else 0,
-                        "paused": pause_state.get("paused", False),
-                        "message": f"Error creating report: {str(e)}",
-                        "status": "FAILED"
-                    }
-                    print(json.dumps(error_data), flush=True)
+                    # Update progress on error
+                    current_total = completed_incomplete + completed_non_created + failed_incomplete + failed_non_created
+                    await update_progress(
+                        process_id,
+                        completed=current_total,
+                        failed=failed_incomplete + failed_non_created
+                    )
+                    emit_progress(
+                        process_id,
+                        current_item=str(report_record["_id"]),
+                        message=f"Error creating report: {str(e)}"
+                    )
 
-            print(f"Phase 2 complete: Created {completed_non_created} reports, {failed_non_created} failed")
+            log(f"Phase 2 complete: Created {completed_non_created} reports, {failed_non_created} failed", "INFO")
 
         # ===== PHASE 3: Fill all collected macros in parallel =====
         if macros_to_fill:
+            # Update process for macro filling phase
+            process_state.total += len(macros_to_fill)  # Add macros to total count
+            process_state.metadata["phase"] = "macro_filling"
+            
             tabs_num = max(1, min(int(tabs_num or 1), len(macros_to_fill)))
             pages = [main_page] + [await browser.get("", new_tab=True) for _ in range(tabs_num - 1)]
 
@@ -1003,49 +946,29 @@ async def ElrajhiRetry(browser, batch_id, tabs_num=3, pdf_only=False, company_ur
             completed_lock = asyncio.Lock()
 
             # Send macro filling phase start
-            macro_phase_progress = {
-                "type": "progress",
-                "batchId": batch_id,
-                "phase": "macro_filling",
-                "completed": 0,
-                "failed": 0,
-                "total": total_macros,
-                "percentage": 0,
-                "paused": False,
-                "message": f"Starting macro filling phase with {tabs_num} tabs..."
-            }
-            print(json.dumps(macro_phase_progress), flush=True)
+            emit_progress(process_id, message=f"Starting macro filling phase with {tabs_num} tabs...")
 
             async def process_macro_chunk(macro_chunk, page, chunk_index):
                 nonlocal completed_macros, failed_macros, finalized_reports, finalization_failed
 
                 for macro_info in macro_chunk:
                     # Check pause/stop state
-                    pause_check = await check_pause_state(batch_id)
-                    if pause_check["action"] == "stop":
-                        print(f"Macro chunk {chunk_index} stopped by user request")
+                    action = await check_and_wait(process_id)
+                    if action == "stop":
+                        log(f"Macro chunk {chunk_index} stopped by user request", "INFO")
                         return
 
                     try:
-                        # Send progress before filling
+                        # Update progress before filling
                         async with completed_lock:
                             current_completed = completed_macros
                             current_failed = failed_macros
 
-                        pause_state = get_pause_state(batch_id)
-                        progress_data = {
-                            "type": "progress",
-                            "batchId": batch_id,
-                            "phase": "macro_filling",
-                            "currentMacroId": macro_info["macro_id"],
-                            "completed": current_completed,
-                            "failed": current_failed,
-                            "total": total_macros,
-                            "percentage": round((current_completed / total_macros) * 100, 2),
-                            "paused": pause_state.get("paused", False),
-                            "message": f"Filling macro {current_completed + 1}/{total_macros}"
-                        }
-                        print(json.dumps(progress_data), flush=True)
+                        emit_progress(
+                            process_id,
+                            current_item=macro_info["macro_id"],
+                            message=f"Filling macro {current_completed + 1}/{total_macros}"
+                        )
 
                         # Fill the macro
                         macro_result = await fill_macro_form(
@@ -1077,25 +1000,20 @@ async def ElrajhiRetry(browser, batch_id, tabs_num=3, pdf_only=False, company_ur
                             current_completed = completed_macros
                             current_failed = failed_macros
 
-                        # Send progress after filling
-                        pause_state = get_pause_state(batch_id)
-                        progress_data = {
-                            "type": "progress",
-                            "batchId": batch_id,
-                            "phase": "macro_filling",
-                            "currentMacroId": macro_info["macro_id"],
-                            "completed": current_completed,
-                            "failed": current_failed,
-                            "total": total_macros,
-                            "percentage": round((current_completed / total_macros) * 100, 2),
-                            "paused": pause_state.get("paused", False),
-                            "message": f"Filled macro {current_completed}/{total_macros}",
-                            "status": macro_result.get("status") if isinstance(macro_result, dict) else "SUCCESS",
-                            "finalizationStatus": finalization_result.get("status") if finalization_result else None,
-                            "finalizationError": finalization_result.get("error") if finalization_result else None,
-                            "report_id": macro_info.get("report_id")
-                        }
-                        print(json.dumps(progress_data), flush=True)
+                        # Update overall progress
+                        total_completed = completed_incomplete + completed_non_created + current_completed
+                        total_failed = failed_incomplete + failed_non_created + current_failed
+                        await update_progress(
+                            process_id,
+                            completed=total_completed,
+                            failed=total_failed
+                        )
+
+                        emit_progress(
+                            process_id,
+                            current_item=macro_info["macro_id"],
+                            message=f"Filled macro {current_completed}/{total_macros}"
+                        )
 
                     except Exception as e:
                         async with completed_lock:
@@ -1104,22 +1022,19 @@ async def ElrajhiRetry(browser, batch_id, tabs_num=3, pdf_only=False, company_ur
                             current_completed = completed_macros
                             current_failed = failed_macros
 
-                        # Send error progress
-                        pause_state = get_pause_state(batch_id)
-                        error_data = {
-                            "type": "progress",
-                            "batchId": batch_id,
-                            "phase": "macro_filling",
-                            "currentMacroId": macro_info["macro_id"],
-                            "completed": current_completed,
-                            "failed": current_failed,
-                            "total": total_macros,
-                            "percentage": round((current_completed / total_macros) * 100, 2),
-                            "paused": pause_state.get("paused", False),
-                            "message": f"Error filling macro: {str(e)}",
-                            "status": "FAILED"
-                        }
-                        print(json.dumps(error_data), flush=True)
+                        # Update progress on error
+                        total_completed = completed_incomplete + completed_non_created + current_completed
+                        total_failed = failed_incomplete + failed_non_created + current_failed
+                        await update_progress(
+                            process_id,
+                            completed=total_completed,
+                            failed=total_failed
+                        )
+                        emit_progress(
+                            process_id,
+                            current_item=macro_info["macro_id"],
+                            message=f"Error filling macro: {str(e)}"
+                        )
 
             # Create tasks for parallel macro filling
             tasks = []
@@ -1133,10 +1048,10 @@ async def ElrajhiRetry(browser, batch_id, tabs_num=3, pdf_only=False, company_ur
             for page in pages[1:]:
                 await page.close()
 
-            print(f"Phase 3 complete: Filled {completed_macros} macros ({failed_macros} failed)")
+            log(f"Phase 3 complete: Filled {completed_macros} macros ({failed_macros} failed)", "INFO")
 
-        # Clear pause state after completion
-        clear_pause_state(batch_id)
+        # Clear process state after completion
+        clear_process(process_id)
 
         return {
             "status": "SUCCESS",
@@ -1157,11 +1072,11 @@ async def ElrajhiRetry(browser, batch_id, tabs_num=3, pdf_only=False, company_ur
     except Exception as e:
         tb = traceback.format_exc()
         
-        # Clear pause state on error
-        clear_pause_state(batch_id)
+        # Clear process state on error
+        if 'process_id' in locals():
+            clear_process(process_id)
         
         return {"status": "FAILED", "error": str(e), "traceback": tb}
-
         
 
 async def pause_batch(batch_id):
@@ -1176,26 +1091,76 @@ async def pause_batch(batch_id):
     except Exception as e:
         return {"status": "FAILED", "error": str(e)}
 
-async def resume_batch(batch_id):
-    """Resume batch processing"""
+async def pause_batch(batch_id):
+    """Pause ElRajhi batch processing"""
     try:
-        state = set_pause_state(batch_id, paused=False)
+        process_manager = get_process_manager()
+        
+        # Try both process types
+        for process_type in ["elrajhi-filler", "elrajhi-retry"]:
+            process_id = f"{process_type}-{batch_id}"
+            state = process_manager.pause_process(process_id)
+            if state:
+                return {
+                    "status": "SUCCESS",
+                    "message": f"Paused {process_type} for batch {batch_id}",
+                    "paused": state.paused,
+                    "process_type": process_type
+                }
+        
         return {
-            "status": "SUCCESS",
-            "message": f"Resumed batch processing for {batch_id}",
-            "paused": state["paused"]
+            "status": "FAILED",
+            "error": f"No active process found for batch {batch_id}"
         }
     except Exception as e:
         return {"status": "FAILED", "error": str(e)}
 
-async def stop_batch(batch_id):
-    """Stop batch processing"""
+
+async def resume_batch(batch_id):
+    """Resume ElRajhi batch processing"""
     try:
-        state = set_pause_state(batch_id, stopped=True)
+        process_manager = get_process_manager()
+        
+        # Try both process types
+        for process_type in ["elrajhi-filler", "elrajhi-retry"]:
+            process_id = f"{process_type}-{batch_id}"
+            state = process_manager.resume_process(process_id)
+            if state:
+                return {
+                    "status": "SUCCESS",
+                    "message": f"Resumed {process_type} for batch {batch_id}",
+                    "paused": state.paused,
+                    "process_type": process_type
+                }
+        
         return {
-            "status": "SUCCESS",
-            "message": f"Stopped batch processing for {batch_id}",
-            "stopped": state["stopped"]
+            "status": "FAILED",
+            "error": f"No active process found for batch {batch_id}"
+        }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}
+
+
+async def stop_batch(batch_id):
+    """Stop ElRajhi batch processing"""
+    try:
+        process_manager = get_process_manager()
+        
+        # Try both process types
+        for process_type in ["elrajhi-filler", "elrajhi-retry"]:
+            process_id = f"{process_type}-{batch_id}"
+            state = process_manager.stop_process(process_id)
+            if state:
+                return {
+                    "status": "SUCCESS",
+                    "message": f"Stopped {process_type} for batch {batch_id}",
+                    "stopped": state.stopped,
+                    "process_type": process_type
+                }
+        
+        return {
+            "status": "FAILED",
+            "error": f"No active process found for batch {batch_id}"
         }
     except Exception as e:
         return {"status": "FAILED", "error": str(e)}

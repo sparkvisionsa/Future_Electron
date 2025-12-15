@@ -115,11 +115,65 @@ const reportHandlers = {
         }
     },
 
+    async handlePauseElRajhiBatch(event, batchId) {
+        try {
+            return await pythonAPI.report.pauseElRajhiBatch(batchId);
+        } catch (err) {
+            console.error('[MAIN] Pause ElRajhi batch error:', err && err.stack ? err.stack : err);
+            return { status: 'FAILED', error: err.message || String(err) };
+        }
+    },
+
+    async handleResumeElRajhiBatch(event, batchId) {
+        try {
+            return await pythonAPI.report.resumeElRajhiBatch(batchId);
+        } catch (err) {
+            console.error('[MAIN] Resume ElRajhi batch error:', err && err.stack ? err.stack : err);
+            return { status: 'FAILED', error: err.message || String(err) };
+        }
+    },
+
+    async handleStopElRajhiBatch(event, batchId) {
+        try {
+            return await pythonAPI.report.stopElRajhiBatch(batchId);
+        } catch (err) {
+            console.error('[MAIN] Stop ElRajhi batch error:', err && err.stack ? err.stack : err);
+            return { status: 'FAILED', error: err.message || String(err) };
+        }
+    },
+
     async handleGrabMacroIds(event, reportId, tabsNum) {
         try {
             return await pythonAPI.report.grabMacroIds(reportId, tabsNum);
         } catch (err) {
             console.error('[MAIN] Grab macro IDs error:', err && err.stack ? err.stack : err);
+            return { status: 'FAILED', error: err.message || String(err) };
+        }
+    },
+
+    async handlePauseGrabMacroIds(event, reportId) {
+        try {
+            return await pythonAPI.report.pauseGrabMacroIds(reportId);
+        } catch (err) {
+            console.error('[MAIN] Pause grab macro IDs error:', err && err.stack ? err.stack : err);
+            return { status: 'FAILED', error: err.message || String(err) };
+        }
+    },
+
+    async handleResumeGrabMacroIds(event, reportId) {
+        try {
+            return await pythonAPI.report.resumeGrabMacroIds(reportId);
+        } catch (err) {
+            console.error('[MAIN] Resume grab macro IDs error:', err && err.stack ? err.stack : err);
+            return { status: 'FAILED', error: err.message || String(err) };
+        }
+    },
+
+    async handleStopGrabMacroIds(event, reportId) {
+        try {
+            return await pythonAPI.report.stopGrabMacroIds(reportId);
+        } catch (err) {
+            console.error('[MAIN] Stop grab macro IDs error:', err && err.stack ? err.stack : err);
             return { status: 'FAILED', error: err.message || String(err) };
         }
     },
@@ -133,11 +187,48 @@ const reportHandlers = {
         }
     },
 
+
     async handleCheckElRajhiBatches(event, batchId, tabsNum) {
         try {
             return await pythonAPI.report.checkElrajhiBatches(batchId, tabsNum);
         } catch (err) {
             console.error('[MAIN] Check ElRajhi batches error:', err && err.stack ? err.stack : err);
+            return { status: 'FAILED', error: err.message || String(err) };
+        }
+    },
+
+    async handleRetryMacroIds(event, reportId, tabsNum) {
+        try {
+            return await pythonAPI.report.retryMacroIds(reportId, tabsNum);
+        } catch (err) {
+            console.error('[MAIN] Retry macro IDs error:', err && err.stack ? err.stack : err);
+            return { status: 'FAILED', error: err.message || String(err) };
+        }
+    },
+
+    async handlePauseRetryMacroIds(event, reportId) {
+        try {
+            return await pythonAPI.report.pauseRetryMacroIds(reportId);
+        } catch (err) {
+            console.error('[MAIN] Pause retry macro IDs error:', err && err.stack ? err.stack : err);
+            return { status: 'FAILED', error: err.message || String(err) };
+        }
+    },
+
+    async handleResumeRetryMacroIds(event, reportId) {
+        try {
+            return await pythonAPI.report.resumeRetryMacroIds(reportId);
+        } catch (err) {
+            console.error('[MAIN] Resume retry macro IDs error:', err && err.stack ? err.stack : err);
+            return { status: 'FAILED', error: err.message || String(err) };
+        }
+    },
+
+    async handleStopRetryMacroIds(event, reportId) {
+        try {
+            return await pythonAPI.report.stopRetryMacroIds(reportId);
+        } catch (err) {
+            console.error('[MAIN] Stop retry macro IDs error:', err && err.stack ? err.stack : err);
             return { status: 'FAILED', error: err.message || String(err) };
         }
     },
@@ -151,14 +242,8 @@ const reportHandlers = {
         }
     },
 
-    async handleRetryMacroIds(event, reportId, tabsNum) {
-        try {
-            return await pythonAPI.report.retryMacroIds(reportId, tabsNum);
-        } catch (err) {
-            console.error('[MAIN] Retry macro IDs error:', err && err.stack ? err.stack : err);
-            return { status: 'FAILED', error: err.message || String(err) };
-        }
-    },
+
+
 
     async handleMacroFill(event, reportId, tabsNum) {
         try {
@@ -234,12 +319,84 @@ const reportHandlers = {
         }
     },
 
+    async handlePauseFullCheck(event, reportId) {
+        try {
+            console.log('[MAIN] Received pause full check request:', reportId);
+            const result = await pythonAPI.report.pauseFullCheck(reportId);
+            console.log("[MAIN] Pause result:", result);
+            return result;
+        } catch (err) {
+            console.error("[MAIN] Pause full check error:", err && err.stack ? err.stack : err);
+            return { status: "FAILED", error: err.message || String(err) };
+        }
+    },
+
+    async handleResumeFullCheck(event, reportId) {
+        try {
+            console.log('[MAIN] Received resume full check request:', reportId);
+            const result = await pythonAPI.report.resumeFullCheck(reportId);
+            console.log("[MAIN] Resume result:", result);
+            return result;
+        } catch (err) {
+            console.error("[MAIN] Resume full check error:", err && err.stack ? err.stack : err);
+            return { status: "FAILED", error: err.message || String(err) };
+        }
+    },
+
+    async handleStopFullCheck(event, reportId) {
+        try {
+            console.log('[MAIN] Received stop full check request:', reportId);
+            const result = await pythonAPI.report.stopFullCheck(reportId);
+            console.log("[MAIN] Stop result:", result);
+            return result;
+        } catch (err) {
+            console.error("[MAIN] Stop full check error:", err && err.stack ? err.stack : err);
+            return { status: "FAILED", error: err.message || String(err) };
+        }
+    },
+
     async handleHalfCheck(event, reportId, tabsNum) {
         try {
             return await pythonAPI.report.halfCheck(reportId, tabsNum);
         } catch (err) {
             console.error('[MAIN] Half check error:', err && err.stack ? err.stack : err);
             return { status: 'FAILED', error: err.message || String(err) };
+        }
+    },
+
+    async handlePauseHalfCheck(event, reportId) {
+        try {
+            console.log('[MAIN] Received pause half check request:', reportId);
+            const result = await pythonAPI.report.pauseHalfCheck(reportId);
+            console.log("[MAIN] Pause result:", result);
+            return result;
+        } catch (err) {
+            console.error("[MAIN] Pause half check error:", err && err.stack ? err.stack : err);
+            return { status: "FAILED", error: err.message || String(err) };
+        }
+    },
+
+    async handleResumeHalfCheck(event, reportId) {
+        try {
+            console.log('[MAIN] Received resume half check request:', reportId);
+            const result = await pythonAPI.report.resumeHalfCheck(reportId);
+            console.log("[MAIN] Resume result:", result);
+            return result;
+        } catch (err) {
+            console.error("[MAIN] Resume half check error:", err && err.stack ? err.stack : err);
+            return { status: "FAILED", error: err.message || String(err) };
+        }
+    },
+
+    async handleStopHalfCheck(event, reportId) {
+        try {
+            console.log('[MAIN] Received stop half check request:', reportId);
+            const result = await pythonAPI.report.stopHalfCheck(reportId);
+            console.log("[MAIN] Stop result:", result);
+            return result;
+        } catch (err) {
+            console.error("[MAIN] Stop half check error:", err && err.stack ? err.stack : err);
+            return { status: "FAILED", error: err.message || String(err) };
         }
     },
 
@@ -252,11 +409,65 @@ const reportHandlers = {
         }
     },
 
+    async pauseDeleteReport(event, reportId) {
+        try {
+            return await pythonAPI.report.pauseDeleteReport(reportId);
+        } catch (err) {
+            console.error('[MAIN] Pause delete report error:', err && err.stack ? err.stack : err);
+            return { status: 'FAILED', error: err.message || String(err) };
+        }
+    },
+
+    async resumeDeleteReport(event, reportId) {
+        try {
+            return await pythonAPI.report.resumeDeleteReport(reportId);
+        } catch (err) {
+            console.error('[MAIN] Resume delete report error:', err && err.stack ? err.stack : err);
+            return { status: 'FAILED', error: err.message || String(err) };
+        }
+    },
+
+    async stopDeleteReport(event, reportId) {
+        try {
+            return await pythonAPI.report.stopDeleteReport(reportId);
+        } catch (err) {
+            console.error('[MAIN] Stop delete report error:', err && err.stack ? err.stack : err);
+            return { status: 'FAILED', error: err.message || String(err) };
+        }
+    },
+
     async deleteIncompleteAssets(event, reportId, maxRounds) {
         try {
             return await pythonAPI.report.deleteIncompleteAssets(reportId, maxRounds);
         } catch (err) {
             console.error('[MAIN] Delete incomplete assets error:', err && err.stack ? err.stack : err);
+            return { status: 'FAILED', error: err.message || String(err) };
+        }
+    },
+
+    async pauseDeleteIncompleteAssets(event, reportId) {
+        try {
+            return await pythonAPI.report.pauseDeleteIncompleteAssets(reportId);
+        } catch (err) {
+            console.error('[MAIN] Pause delete incomplete assets error:', err && err.stack ? err.stack : err);
+            return { status: 'FAILED', error: err.message || String(err) };
+        }
+    },
+
+    async resumeDeleteIncompleteAssets(event, reportId) {
+        try {
+            return await pythonAPI.report.resumeDeleteIncompleteAssets(reportId);
+        } catch (err) {
+            console.error('[MAIN] Resume delete incomplete assets error:', err && err.stack ? err.stack : err);
+            return { status: 'FAILED', error: err.message || String(err) };
+        }
+    },
+
+    async stopDeleteIncompleteAssets(event, reportId) {
+        try {
+            return await pythonAPI.report.stopDeleteIncompleteAssets(reportId);
+        } catch (err) {
+            console.error('[MAIN] Stop delete incomplete assets error:', err && err.stack ? err.stack : err);
             return { status: 'FAILED', error: err.message || String(err) };
         }
     },
@@ -276,6 +487,42 @@ const reportHandlers = {
         } catch (err) {
             console.error('[MAIN] Duplicate report navigation error:', err && err.stack ? err.stack : err);
             return { status: 'FAILED', error: err.message || String(err) };
+        }
+    },
+
+    async handlePauseCreateMacros(event, reportId) {
+        try {
+            console.log('[MAIN] Received pause create macros request:', reportId);
+            const result = await pythonAPI.report.pauseCreateMacros(reportId);
+            console.log("[MAIN] Pause result:", result);
+            return result;
+        } catch (err) {
+            console.error("[MAIN] Pause create macros error:", err && err.stack ? err.stack : err);
+            return { status: "FAILED", error: err.message || String(err) };
+        }
+    },
+
+    async handleResumeCreateMacros(event, reportId) {
+        try {
+            console.log('[MAIN] Received resume create macros request:', reportId);
+            const result = await pythonAPI.report.resumeCreateMacros(reportId);
+            console.log("[MAIN] Resume result:", result);
+            return result;
+        } catch (err) {
+            console.error("[MAIN] Resume create macros error:", err && err.stack ? err.stack : err);
+            return { status: "FAILED", error: err.message || String(err) };
+        }
+    },
+
+    async handleStopCreateMacros(event, reportId) {
+        try {
+            console.log('[MAIN] Received stop create macros request:', reportId);
+            const result = await pythonAPI.report.stopCreateMacros(reportId);
+            console.log("[MAIN] Stop result:", result);
+            return result;
+        } catch (err) {
+            console.error("[MAIN] Stop create macros error:", err && err.stack ? err.stack : err);
+            return { status: "FAILED", error: err.message || String(err) };
         }
     },
 };

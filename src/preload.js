@@ -18,7 +18,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     openTaqeemLogin: (opts = {}) => safeInvoke('open-taqeem-login', opts),
 
     // Set refresh token (main process will store this as HttpOnly cookie)
-    // opts: { baseUrl, name, path, maxAgeDays, sameSite, secure, httpOnly }
     setRefreshToken: (token, opts = {}) => {
         const payload = Object.assign({
             baseUrl: opts.baseUrl || 'http://localhost:3000',
@@ -33,7 +32,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
         return safeInvoke('auth-set-refresh-token', payload);
     },
 
-    // (optional) remove cookie helper
     clearRefreshToken: (opts = {}) => {
         const payload = {
             baseUrl: opts.baseUrl || 'http://localhost:3000',
@@ -46,37 +44,80 @@ contextBridge.exposeInMainWorld('electronAPI', {
     validateReport: (reportId) => safeInvoke('validate-report', reportId),
     createMacros: (reportId, macroCount, tabsNum, batchSize) => safeInvoke('create-macros', reportId, macroCount, tabsNum, batchSize),
     extractAssetData: (excelFilePath) => safeInvoke('extract-asset-data', excelFilePath),
+
     grabMacroIds: (reportId, tabsNum) => safeInvoke('grab-macro-ids', reportId, tabsNum),
+    pauseGrabMacroIds: (reportId) => safeInvoke('pause-grab-macro-ids', reportId),
+    resumeGrabMacroIds: (reportId) => safeInvoke('resume-grab-macro-ids', reportId),
+    stopGrabMacroIds: (reportId) => safeInvoke('stop-grab-macro-ids', reportId),
+
     retryMacroIds: (reportId, tabsNum) => safeInvoke('retry-macro-ids', reportId, tabsNum),
+    pauseRetryMacroIds: (reportId) => safeInvoke('pause-retry-macro-ids', reportId),
+    resumeRetryMacroIds: (reportId) => safeInvoke('resume-retry-macro-ids', reportId),
+    stopRetryMacroIds: (reportId) => safeInvoke('stop-retry-macro-ids', reportId),
+
     macroFill: (reportId, tabsNum) => safeInvoke('macro-fill', reportId, tabsNum),
+
     elrajhiUploadReport: (batchId, tabsNum, pdfOnly, finalizeSubmission = true) => safeInvoke('elrajhi-filler', batchId, tabsNum, pdfOnly, finalizeSubmission),
+
+    pauseElrajiBatch: (batchId) => safeInvoke('pause-elrajhi-batch', batchId),
+    resumeElrajiBatch: (batchId) => safeInvoke('resume-elrajhi-batch', batchId),
+    stopElrajiBatch: (batchId) => safeInvoke('stop-elrajhi-batch', batchId),
+
     checkElrajhiBatches: (batchId, tabsNum) => safeInvoke('elrajhi-check-batches', batchId, tabsNum),
     reuploadElrajhiReport: (reportId) => safeInvoke('elrajhi-reupload-report', reportId),
     duplicateReportNavigate: (recordId, company) => safeInvoke('duplicate-report', recordId, company),
     createReportsByBatch: (batchId, tabsNum) => safeInvoke('create-reports-by-batch', batchId, tabsNum),
     retryElrajhiReport: (batchId, tabsNum) => safeInvoke('retry-ElRajhi-report', batchId, tabsNum),
 
-    // Pause/Resume/Stop controls
+    // Pause/Resume/Stop controls for macro-fill
     pauseMacroFill: (reportId) => safeInvoke('pause-macro-fill', reportId),
     resumeMacroFill: (reportId) => safeInvoke('resume-macro-fill', reportId),
     stopMacroFill: (reportId) => safeInvoke('stop-macro-fill', reportId),
 
+    // NEW: Pause/Resume/Stop controls for create-macros
+    pauseCreateMacros: (reportId) => safeInvoke('pause-create-macros', reportId),
+    resumeCreateMacros: (reportId) => safeInvoke('resume-create-macros', reportId),
+    stopCreateMacros: (reportId) => safeInvoke('stop-create-macros', reportId),
+
     fullCheck: (reportId, tabsNum) => safeInvoke('full-check', reportId, tabsNum),
+    pauseFullCheck: (reportId) => safeInvoke('pause-full-check', reportId),
+    resumeFullCheck: (reportId) => safeInvoke('resume-full-check', reportId),
+    stopFullCheck: (reportId) => safeInvoke('stop-full-check', reportId),
+
     halfCheck: (reportId, tabsNum) => safeInvoke('half-check', reportId, tabsNum),
+    pauseHalfCheck: (reportId) => safeInvoke('pause-half-check', reportId),
+    resumeHalfCheck: (reportId) => safeInvoke('resume-half-check', reportId),
+    stopHalfCheck: (reportId) => safeInvoke('stop-half-check', reportId),
 
     deleteReport: (reportId, maxRounds) => safeInvoke('delete-report', reportId, maxRounds),
+    pauseDeleteReport: (reportId) => safeInvoke('pause-delete-report', reportId),
+    resumeDeleteReport: (reportId) => safeInvoke('resume-delete-report', reportId),
+    stopDeleteReport: (reportId) => safeInvoke('stop-delete-report', reportId),
+
     deleteIncompleteAssets: (reportId, maxRounds) => safeInvoke('delete-incomplete-assets', reportId, maxRounds),
+    pauseDeleteIncompleteAssets: (reportId) => safeInvoke('pause-delete-incomplete-assets', reportId),
+    resumeDeleteIncompleteAssets: (reportId) => safeInvoke('resume-delete-incomplete-assets', reportId),
+    stopDeleteIncompleteAssets: (reportId) => safeInvoke('stop-delete-incomplete-assets', reportId),
+
     handleCancelledReport: (reportId) => safeInvoke('handle-cancelled-report', reportId),
 
     getToken: () => safeInvoke('get-token'),
+
     // Progress listener for macro fill
     onMacroFillProgress: (callback) => {
         const subscription = (event, data) => callback(data);
         ipcRenderer.on('macro-fill-progress', subscription);
-
-        // Return cleanup function
         return () => {
             ipcRenderer.removeListener('macro-fill-progress', subscription);
+        };
+    },
+
+    // NEW: Progress listener for create-macros
+    onCreateMacrosProgress: (callback) => {
+        const subscription = (event, data) => callback(data);
+        ipcRenderer.on('create-macros-progress', subscription);
+        return () => {
+            ipcRenderer.removeListener('create-macros-progress', subscription);
         };
     },
 
@@ -90,7 +131,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Health
     checkHealth: () => safeInvoke('check-server-health'),
 
-    // API requests (optionally include headers, e.g., Authorization)
+    // API requests
     apiRequest: (method, url, data = {}, headers = {}) =>
         safeInvoke('api-request', { method, url, data, headers }),
 

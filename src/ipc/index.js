@@ -19,10 +19,25 @@ function registerIpcHandlers() {
     ipcMain.handle('validate-report', reportHandlers.handleValidateReport);
     ipcMain.handle('create-macros', reportHandlers.handleCreateMacros);
     ipcMain.handle('extract-asset-data', reportHandlers.handleExtractAssetData);
+
     ipcMain.handle('grab-macro-ids', reportHandlers.handleGrabMacroIds);
+    ipcMain.handle('pause-grab-macro-ids', reportHandlers.handlePauseGrabMacroIds);
+    ipcMain.handle('resume-grab-macro-ids', reportHandlers.handleResumeGrabMacroIds);
+    ipcMain.handle('stop-grab-macro-ids', reportHandlers.handleStopGrabMacroIds);
+
     ipcMain.handle('retry-macro-ids', reportHandlers.handleRetryMacroIds);
+    ipcMain.handle('pause-retry-macro-ids', reportHandlers.handlePauseRetryMacroIds);
+    ipcMain.handle('resume-retry-macro-ids', reportHandlers.handleResumeRetryMacroIds);
+    ipcMain.handle('stop-retry-macro-ids', reportHandlers.handleStopRetryMacroIds);
+
+
     ipcMain.handle('macro-fill', reportHandlers.handleMacroFill);
+
     ipcMain.handle('elrajhi-filler', reportHandlers.handleElRajhiUploadReport);
+    ipcMain.handle('pause-elrajhi-batch', reportHandlers.handlePauseElRajhiBatch);
+    ipcMain.handle('resume-elrajhi-batch', reportHandlers.handleResumeElRajhiBatch);
+    ipcMain.handle('stop-elrajhi-batch', reportHandlers.handleStopElRajhiBatch);
+
     ipcMain.handle('elrajhi-check-batches', reportHandlers.handleCheckElRajhiBatches);
     ipcMain.handle('elrajhi-reupload-report', reportHandlers.handleReuploadElRajhiReport);
     ipcMain.handle('duplicate-report', reportHandlers.handleDuplicateReport);
@@ -33,12 +48,32 @@ function registerIpcHandlers() {
     ipcMain.handle('resume-macro-fill', reportHandlers.handleResumeMacroFill);
     ipcMain.handle('stop-macro-fill', reportHandlers.handleStopMacroFill);
 
+    ipcMain.handle('pause-create-macros', reportHandlers.handlePauseCreateMacros);
+    ipcMain.handle('resume-create-macros', reportHandlers.handleResumeCreateMacros);
+    ipcMain.handle('stop-create-macros', reportHandlers.handleStopCreateMacros);
+
     ipcMain.handle('full-check', reportHandlers.handleFullCheck);
+    ipcMain.handle('pause-full-check', reportHandlers.handlePauseFullCheck);
+    ipcMain.handle('resume-full-check', reportHandlers.handleResumeFullCheck);
+    ipcMain.handle('stop-full-check', reportHandlers.handleStopFullCheck);
+
     ipcMain.handle('half-check', reportHandlers.handleHalfCheck);
+    ipcMain.handle('pause-half-check', reportHandlers.handlePauseHalfCheck);
+    ipcMain.handle('resume-half-check', reportHandlers.handleResumeHalfCheck);
+    ipcMain.handle('stop-half-check', reportHandlers.handleStopHalfCheck);
 
     ipcMain.handle('delete-report', reportHandlers.deleteReport);
+    ipcMain.handle('pause-delete-report', reportHandlers.pauseDeleteReport)
+    ipcMain.handle('resume-delete-report', reportHandlers.resumeDeleteReport)
+    ipcMain.handle('stop-delete-report', reportHandlers.stopDeleteReport)
+
     ipcMain.handle('delete-incomplete-assets', reportHandlers.deleteIncompleteAssets);
+    ipcMain.handle('resume-delete-incomplete-assets', reportHandlers.resumeDeleteIncompleteAssets);
+    ipcMain.handle('stop-delete-incomplete-assets', reportHandlers.stopDeleteIncompleteAssets);
+    ipcMain.handle('pause-delete-incomplete-assets', reportHandlers.pauseDeleteIncompleteAssets);
+
     ipcMain.handle('handle-cancelled-report', reportHandlers.handleCancelledReport);
+
 
     // Worker handlers
     ipcMain.handle('ping-worker', workerHandlers.handlePing);
@@ -89,7 +124,12 @@ function unregisterIpcHandlers() {
     ipcMain.removeAllListeners('grab-macro-ids');
     ipcMain.removeAllListeners('retry-macro-ids');
     ipcMain.removeAllListeners('macro-fill');
+
     ipcMain.removeAllListeners('elrajhi-filler');
+    ipcMain.removeAllListeners('pause-elrajhi-batch');
+    ipcMain.removeAllListeners('resume-elrajhi-batch');
+    ipcMain.removeAllListeners('stop-elrajhi-batch');
+
     ipcMain.removeAllListeners('elrajhi-check-batches');
     ipcMain.removeAllListeners('elrajhi-reupload-report');
     ipcMain.removeAllListeners('duplicate-report');
@@ -101,10 +141,25 @@ function unregisterIpcHandlers() {
     ipcMain.removeAllListeners('stop-macro-fill');
 
     ipcMain.removeAllListeners('full-check');
+    ipcMain.removeAllListeners('pause-full-check');
+    ipcMain.removeAllListeners('resume-full-check');
+    ipcMain.removeAllListeners('stop-full-check');
+
     ipcMain.removeAllListeners('half-check');
+    ipcMain.removeAllListeners('pause-half-check');
+    ipcMain.removeAllListeners('resume-half-check');
+    ipcMain.removeAllListeners('stop-half-check');
 
     ipcMain.removeAllListeners('delete-report');
+    ipcMain.removeAllListeners('pause-delete-report');
+    ipcMain.removeAllListeners('resume-delete-report');
+    ipcMain.removeAllListeners('stop-delete-report');
+
     ipcMain.removeAllListeners('delete-incomplete-assets');
+    ipcMain.removeAllListeners('resume-delete-incomplete-assets');
+    ipcMain.removeAllListeners('stop-delete-incomplete-assets');
+    ipcMain.removeAllListeners('pause-delete-incomplete-assets');
+
     ipcMain.removeAllListeners('handle-cancelled-report');
 
     ipcMain.removeAllListeners('check-server-health');

@@ -3,6 +3,14 @@ from datetime import datetime
 
 from .formFiller import bulk_inject_inputs
 from scripts.core.utils import wait_for_element
+from scripts.core.processControl import (
+    get_process_manager,
+    check_and_wait,
+    create_process,
+    clear_process,
+    update_progress,
+    emit_progress
+)
 
 
 async def save_macros(page, macro_data, field_map, field_types):
@@ -39,6 +47,20 @@ def calculate_tab_batches(total_macros, max_tabs, batch_size=10):
 
 async def create_macros_multi_tab(browser, report_id, macro_count, macro_data_template,
                                   field_map, field_types, max_tabs=3, batch_size=10):
+    """
+    Create macros with pause/resume/stop support using the modular state manager
+    """
+    process_manager = get_process_manager()
+    
+    # Create process state
+    process_state = create_process(
+        process_id=report_id,
+        process_type="create-macros",
+        total=macro_count,
+        report_id=report_id,
+        max_tabs=max_tabs,
+        batch_size=batch_size
+    )
 
     try:
         print(json.dumps({
@@ -53,6 +75,7 @@ async def create_macros_multi_tab(browser, report_id, macro_count, macro_data_te
 
         current_url = await main_page.evaluate("window.location.href")
         if str(report_id) not in current_url:
+            clear_process(report_id)
             print(json.dumps({
                 "event": "navigation_failed",
                 "msg": f"Failed to navigate to asset creation page for report {report_id}",
@@ -90,17 +113,28 @@ async def create_macros_multi_tab(browser, report_id, macro_count, macro_data_te
                 await asyncio.sleep(0.5)
 
         completed = 0
+        failed = 0
         total_created = 0
 
-        async def process_macros_in_tab(page, start_index, count):
-            nonlocal completed, total_created
+        async def process_macros_in_tab(page, start_index, count, tab_id):
+            nonlocal completed, failed, total_created
 
             for batch_start in range(0, count, batch_size):
+                # Check pause/stop state before each batch
+                action = await check_and_wait(report_id)
+                if action == "stop":
+                    print(json.dumps({
+                        "event": "stopped",
+                        "msg": f"Tab {tab_id} stopped by user request"
+                    }), file=sys.stderr)
+                    return {"status": "STOPPED", "message": "Process stopped by user"}
+
                 batch_count = min(batch_size, count - batch_start)
+                batch_index = start_index + batch_start
 
                 print(json.dumps({
                     "event": "processing_batch",
-                    "msg": f"Processing batch: {start_index + batch_start} to {start_index + batch_start + batch_count - 1}"
+                    "msg": f"Tab {tab_id}: Processing batch {batch_index} to {batch_index + batch_count - 1}"
                 }), file=sys.stderr)
 
                 # Prepare macro data for this batch
@@ -109,9 +143,7 @@ async def create_macros_multi_tab(browser, report_id, macro_count, macro_data_te
                     "asset_data": []
                 }
 
-                # If macro_data_template is a list, use it; otherwise replicate the template
                 if isinstance(macro_data_template, list):
-                    # Use provided macro data
                     for i in range(batch_count):
                         idx = start_index + batch_start + i
                         if idx < len(macro_data_template):
@@ -123,50 +155,101 @@ async def create_macros_multi_tab(browser, report_id, macro_count, macro_data_te
 
                 form_data = {**batch_data, **macro_data_template} if isinstance(macro_data_template, dict) else batch_data
 
+                # Emit progress before processing
+                emit_progress(
+                    report_id,
+                    current_item=f"batch_{batch_index}",
+                    message=f"Tab {tab_id}: Creating batch {batch_index}-{batch_index + batch_count - 1}"
+                )
+
                 result = await save_macros(page, form_data, field_map, field_types)
 
                 if result.get("status") == "FAILED":
+                    lock = process_manager.get_lock(report_id)
+                    if lock:
+                        async with lock:
+                            failed += batch_count
+                    await update_progress(report_id, completed=completed, failed=failed)
+                    
                     print(json.dumps({
                         "event": "save_failed",
-                        "msg": f"Failed to save batch: {result.get('error')}"
+                        "msg": f"Tab {tab_id}: Failed to save batch: {result.get('error')}"
                     }), file=sys.stderr)
                     return result
 
-                completed += batch_count
-                total_created += batch_count
+                # Update progress after successful batch
+                lock = process_manager.get_lock(report_id)
+                if lock:
+                    async with lock:
+                        completed += batch_count
+                        total_created += batch_count
+                
+                await update_progress(
+                    report_id, 
+                    completed=completed, 
+                    failed=failed,
+                    emit=True
+                )
 
                 print(json.dumps({
                     "event": "progress",
-                    "msg": f"Progress: {completed}/{macro_count} macros created ({round((completed/macro_count)*100, 2)}%)"
+                    "msg": f"Tab {tab_id}: Progress: {completed}/{macro_count} macros created ({round((completed/macro_count)*100, 2)}%)"
                 }), file=sys.stderr)
 
+                # Navigate to next batch if not the last one
                 if batch_start + batch_size < count:
                     await page.get(asset_url)
                     await asyncio.sleep(1)
 
             return {"status": "SUCCESS"}
 
+        # Create tasks for parallel processing
         tasks = []
         idx = 0
-        for page, count in zip(pages, distribution):
-            tasks.append(process_macros_in_tab(page, idx, count))
-            idx += count
+        for i, (page, count) in enumerate(zip(pages, distribution)):
+            if count > 0:
+                tasks.append(process_macros_in_tab(page, idx, count, i))
+                idx += count
 
         # Execute all tasks in parallel
-        results = await asyncio.gather(*tasks)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Check for failures
+        # Check for failures or stops
+        was_stopped = False
         for result in results:
-            if isinstance(result, dict) and result.get("status") == "FAILED":
+            if isinstance(result, Exception):
                 print(json.dumps({
-                    "event": "task_failure",
-                    "msg": f"One of the tasks failed: {result.get('error', 'unknown')}"
+                    "event": "exception",
+                    "msg": f"Task exception: {str(result)}"
                 }), file=sys.stderr)
-                return result
+                clear_process(report_id)
+                return {
+                    "status": "FAILED",
+                    "error": str(result),
+                    "traceback": traceback.format_exc()
+                }
+            elif isinstance(result, dict):
+                if result.get("status") == "STOPPED":
+                    was_stopped = True
+                elif result.get("status") == "FAILED":
+                    clear_process(report_id)
+                    return result
 
         # Close extra tabs
         for p in pages[1:]:
             await p.close()
+
+        # Clear process state
+        clear_process(report_id)
+
+        if was_stopped:
+            return {
+                "status": "STOPPED",
+                "message": f"Process stopped. Created {total_created}/{macro_count} macros",
+                "report_id": report_id,
+                "total_created": total_created,
+                "total_requested": macro_count
+            }
 
         print(json.dumps({
             "event": "success",
@@ -177,11 +260,13 @@ async def create_macros_multi_tab(browser, report_id, macro_count, macro_data_te
             "status": "SUCCESS",
             "report_id": report_id,
             "total_created": total_created,
+            "failed": failed,
             "completion_time": datetime.now().isoformat()
         }
 
     except Exception as e:
         tb = traceback.format_exc()
+        clear_process(report_id)
         print(json.dumps({
             "event": "exception",
             "msg": str(e),
@@ -221,12 +306,10 @@ async def run_create_assets(browser, report_id, macro_count, tabs_num=3, batch_s
             "error": "macroCount must be a positive integer",
         }
 
-    # Defaults
     tabs_num = int(tabs_num) if tabs_num else 3
     batch_size = int(batch_size) if batch_size else 10
     macro_data_template = macro_data if macro_data is not None else {}
 
-    # Import the pieces we need (importing here keeps the top-level import cheaper)
     try:
         from scripts.submission.formSteps import form_steps
     except Exception as e:
@@ -258,6 +341,7 @@ async def run_create_assets(browser, report_id, macro_count, tabs_num=3, batch_s
         )
     except Exception as e:
         tb = traceback.format_exc()
+        clear_process(report_id)
         return {
             "status": "FAILED",
             "error": str(e),
@@ -266,8 +350,71 @@ async def run_create_assets(browser, report_id, macro_count, tabs_num=3, batch_s
             "time": datetime.now().isoformat(),
         }
 
-    # return the actual result from create_macros_multi_tab (success or failure payload)
     return result
+
+
+# Pause/Resume/Stop handlers
+async def pause_create_macros(report_id):
+    """Pause macro creation for a report"""
+    try:
+        process_manager = get_process_manager()
+        state = process_manager.pause_process(report_id)
+        
+        if not state:
+            return {
+                "status": "FAILED",
+                "error": f"No active process found for report {report_id}"
+            }
+        
+        return {
+            "status": "SUCCESS",
+            "message": f"Paused macro creation for report {report_id}",
+            "paused": state.paused
+        }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}
+
+
+async def resume_create_macros(report_id):
+    """Resume macro creation for a report"""
+    try:
+        process_manager = get_process_manager()
+        state = process_manager.resume_process(report_id)
+        
+        if not state:
+            return {
+                "status": "FAILED",
+                "error": f"No active process found for report {report_id}"
+            }
+        
+        return {
+            "status": "SUCCESS",
+            "message": f"Resumed macro creation for report {report_id}",
+            "paused": state.paused
+        }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}
+
+
+async def stop_create_macros(report_id):
+    """Stop macro creation for a report"""
+    try:
+        process_manager = get_process_manager()
+        state = process_manager.stop_process(report_id)
+        
+        if not state:
+            return {
+                "status": "FAILED",
+                "error": f"No active process found for report {report_id}"
+            }
+        
+        return {
+            "status": "SUCCESS",
+            "message": f"Stopped macro creation for report {report_id}",
+            "stopped": state.stopped
+        }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}
 
 async def run_create_assets_by_count(browser, num_macros, macro_data_template=None, tabs_num=3, batch_size=10):
     """

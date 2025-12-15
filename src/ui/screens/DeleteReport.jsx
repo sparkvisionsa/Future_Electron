@@ -1,11 +1,15 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
     CheckCircle,
     FileText,
     Trash2,
     Search,
     PlayCircle,
-    Package
+    Package,
+    PauseCircle,
+    Play,
+    StopCircle,
+    AlertCircle
 } from "lucide-react";
 
 const DeleteReport = () => {
@@ -24,6 +28,12 @@ const DeleteReport = () => {
     // New states for status change
     const [statusChangeResult, setStatusChangeResult] = useState(null);
 
+    // New states for pause/resume/stop operations
+    const [deleteReportStatus, setDeleteReportStatus] = useState(null); // 'running', 'paused', 'stopped', 'completed'
+    const [deleteAssetsStatus, setDeleteAssetsStatus] = useState(null); // 'running', 'paused', 'stopped', 'completed'
+    const [operationResult, setOperationResult] = useState(null);
+
+
     // Handle report validation in Taqeem
     const handleCheckReportInTaqeem = async () => {
         if (!reportId.trim()) {
@@ -35,6 +45,7 @@ const DeleteReport = () => {
         setError("");
         setReportExists(null);
         setStatusChangeResult(null);
+        setOperationResult(null);
 
         try {
             const result = await window.electronAPI.validateReport(reportId);
@@ -90,19 +101,23 @@ const DeleteReport = () => {
         setError("");
         setDeleteRequested(true);
         setStatusChangeResult(null);
+        setDeleteReportStatus('running');
+        setOperationResult(null);
 
         try {
             console.log(`Sending delete request for report: ${reportId}`);
 
-            // Fire the delete request but don't wait for response
+            // Fire the delete request
             window.electronAPI.deleteReport(reportId, 10).then(result => {
                 console.log("Report deletion completed:", result);
             }).catch(err => {
                 console.error("Report deletion encountered error:", err);
+                setDeleteReportStatus('stopped');
             });
 
         } catch (err) {
             console.error("Error initiating report deletion:", err);
+            setDeleteReportStatus('stopped');
         }
     };
 
@@ -116,19 +131,215 @@ const DeleteReport = () => {
         setError("");
         setDeleteAssetsRequested(true);
         setStatusChangeResult(null);
+        setDeleteAssetsStatus('running');
+        setOperationResult(null);
 
         try {
             console.log(`Sending delete assets request for report: ${reportId}`);
 
-            // Fire the delete assets request but don't wait for response
+            // Fire the delete assets request
             window.electronAPI.deleteIncompleteAssets(reportId, 10).then(result => {
                 console.log("Report assets deletion completed:", result);
             }).catch(err => {
                 console.error("Report assets deletion encountered error:", err);
+                setDeleteAssetsStatus('stopped');
             });
 
         } catch (err) {
             console.error("Error initiating report assets deletion:", err);
+            setDeleteAssetsStatus('stopped');
+        }
+    };
+
+    // Handle pause delete report - CHECK API RESPONSE
+    const handlePauseDeleteReport = async () => {
+        if (!reportId.trim()) {
+            setError("Report ID is required");
+            return;
+        }
+
+        try {
+            const result = await window.electronAPI.pauseDeleteReport(reportId);
+            console.log("Pause delete report result:", result);
+
+            if (result.status === "SUCCESS") {
+                setDeleteReportStatus('paused');
+            } else {
+                setOperationResult({
+                    type: 'pause',
+                    operation: 'delete-report',
+                    status: result.status,
+                    message: result.message || "Failed to pause delete report"
+                });
+            }
+        } catch (err) {
+            console.error("Error pausing delete report:", err);
+            setOperationResult({
+                type: 'pause',
+                operation: 'delete-report',
+                status: 'FAILED',
+                message: err.message || "Error pausing delete report"
+            });
+        }
+    };
+
+    // Handle resume delete report - CHECK API RESPONSE
+    const handleResumeDeleteReport = async () => {
+        if (!reportId.trim()) {
+            setError("Report ID is required");
+            return;
+        }
+
+        try {
+            const result = await window.electronAPI.resumeDeleteReport(reportId);
+            console.log("Resume delete report result:", result);
+
+            if (result.status === "SUCCESS") {
+                setDeleteReportStatus('running');
+            } else {
+                setOperationResult({
+                    type: 'resume',
+                    operation: 'delete-report',
+                    status: result.status,
+                    message: result.message || "Failed to resume delete report"
+                });
+            }
+        } catch (err) {
+            console.error("Error resuming delete report:", err);
+            setOperationResult({
+                type: 'resume',
+                operation: 'delete-report',
+                status: 'FAILED',
+                message: err.message || "Error resuming delete report"
+            });
+        }
+    };
+
+    // Handle stop delete report - CHECK API RESPONSE
+    const handleStopDeleteReport = async () => {
+        if (!reportId.trim()) {
+            setError("Report ID is required");
+            return;
+        }
+
+        try {
+            const result = await window.electronAPI.stopDeleteReport(reportId);
+            console.log("Stop delete report result:", result);
+
+            if (result.status === "SUCCESS") {
+                setDeleteReportStatus('stopped');
+            } else {
+                setOperationResult({
+                    type: 'stop',
+                    operation: 'delete-report',
+                    status: result.status,
+                    message: result.message || "Failed to stop delete report"
+                });
+            }
+        } catch (err) {
+            console.error("Error stopping delete report:", err);
+            setOperationResult({
+                type: 'stop',
+                operation: 'delete-report',
+                status: 'FAILED',
+                message: err.message || "Error stopping delete report"
+            });
+        }
+    };
+
+    // Handle pause delete incomplete assets - CHECK API RESPONSE
+    const handlePauseDeleteIncompleteAssets = async () => {
+        if (!reportId.trim()) {
+            setError("Report ID is required");
+            return;
+        }
+
+        try {
+            const result = await window.electronAPI.pauseDeleteIncompleteAssets(reportId);
+            console.log("Pause delete incomplete assets result:", result);
+
+            if (result.status === "SUCCESS") {
+                setDeleteAssetsStatus('paused');
+            } else {
+                setOperationResult({
+                    type: 'pause',
+                    operation: 'delete-incomplete-assets',
+                    status: result.status,
+                    message: result.message || "Failed to pause delete assets"
+                });
+            }
+        } catch (err) {
+            console.error("Error pausing delete incomplete assets:", err);
+            setOperationResult({
+                type: 'pause',
+                operation: 'delete-incomplete-assets',
+                status: 'FAILED',
+                message: err.message || "Error pausing delete assets"
+            });
+        }
+    };
+
+    // Handle resume delete incomplete assets - CHECK API RESPONSE
+    const handleResumeDeleteIncompleteAssets = async () => {
+        if (!reportId.trim()) {
+            setError("Report ID is required");
+            return;
+        }
+
+        try {
+            const result = await window.electronAPI.resumeDeleteIncompleteAssets(reportId);
+            console.log("Resume delete incomplete assets result:", result);
+
+            if (result.status === "SUCCESS") {
+                setDeleteAssetsStatus('running');
+            } else {
+                setOperationResult({
+                    type: 'resume',
+                    operation: 'delete-incomplete-assets',
+                    status: result.status,
+                    message: result.message || "Failed to resume delete assets"
+                });
+            }
+        } catch (err) {
+            console.error("Error resuming delete incomplete assets:", err);
+            setOperationResult({
+                type: 'resume',
+                operation: 'delete-incomplete-assets',
+                status: 'FAILED',
+                message: err.message || "Error resuming delete assets"
+            });
+        }
+    };
+
+    // Handle stop delete incomplete assets - CHECK API RESPONSE
+    const handleStopDeleteIncompleteAssets = async () => {
+        if (!reportId.trim()) {
+            setError("Report ID is required");
+            return;
+        }
+
+        try {
+            const result = await window.electronAPI.stopDeleteIncompleteAssets(reportId);
+            console.log("Stop delete incomplete assets result:", result);
+
+            if (result.status === "SUCCESS") {
+                setDeleteAssetsStatus('stopped');
+            } else {
+                setOperationResult({
+                    type: 'stop',
+                    operation: 'delete-incomplete-assets',
+                    status: result.status,
+                    message: result.message || "Failed to stop delete assets"
+                });
+            }
+        } catch (err) {
+            console.error("Error stopping delete incomplete assets:", err);
+            setOperationResult({
+                type: 'stop',
+                operation: 'delete-incomplete-assets',
+                status: 'FAILED',
+                message: err.message || "Error stopping delete assets"
+            });
         }
     };
 
@@ -160,6 +371,194 @@ const DeleteReport = () => {
         } catch (err) {
             console.error("Error initiating status change:", err);
         }
+    };
+
+    // Get status color
+    const getStatusColor = (status) => {
+        switch (status) {
+            case 'running': return 'text-green-500';
+            case 'paused': return 'text-yellow-500';
+            case 'stopped': return 'text-red-500';
+            case 'completed': return 'text-blue-500';
+            default: return 'text-gray-500';
+        }
+    };
+
+    // Get status text
+    const getStatusText = (status) => {
+        switch (status) {
+            case 'running': return 'Running';
+            case 'paused': return 'Paused';
+            case 'stopped': return 'Stopped';
+            case 'completed': return 'Completed';
+            default: return 'Not Started';
+        }
+    };
+
+    // Render operation status
+    const renderOperationStatus = () => {
+        if (!deleteReportStatus && !deleteAssetsStatus && !operationResult) return null;
+
+        return (
+            <div className="space-y-4">
+                {/* Delete Report Status */}
+                {deleteReportStatus && (
+                    <div className="bg-gray-50 border border-gray-200 rounded-xl p-4">
+                        <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                                <Trash2 className="w-5 h-5 text-red-500" />
+                                <span className="font-medium text-gray-800">Delete Report</span>
+                            </div>
+                            <div className={`flex items-center gap-2 ${getStatusColor(deleteReportStatus)}`}>
+                                <div className={`w-2 h-2 rounded-full ${deleteReportStatus === 'running' ? 'bg-green-500 animate-pulse' :
+                                    deleteReportStatus === 'paused' ? 'bg-yellow-500' :
+                                        deleteReportStatus === 'stopped' ? 'bg-red-500' : 'bg-blue-500'}`} />
+                                <span className="text-sm font-medium">{getStatusText(deleteReportStatus)}</span>
+                            </div>
+                        </div>
+
+                        {deleteReportStatus === 'running' && (
+                            <div className="flex gap-2 mt-3">
+                                <button
+                                    onClick={handlePauseDeleteReport}
+                                    className="flex-1 px-4 py-2 bg-yellow-500 hover:bg-yellow-600 text-white rounded-lg font-medium flex items-center justify-center gap-2 transition-colors"
+                                >
+                                    <PauseCircle className="w-4 h-4" />
+                                    Pause
+                                </button>
+                                <button
+                                    onClick={handleStopDeleteReport}
+                                    className="flex-1 px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg font-medium flex items-center justify-center gap-2 transition-colors"
+                                >
+                                    <StopCircle className="w-4 h-4" />
+                                    Stop
+                                </button>
+                            </div>
+                        )}
+
+                        {deleteReportStatus === 'paused' && (
+                            <div className="flex gap-2 mt-3">
+                                <button
+                                    onClick={handleResumeDeleteReport}
+                                    className="flex-1 px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg font-medium flex items-center justify-center gap-2 transition-colors"
+                                >
+                                    <Play className="w-4 h-4" />
+                                    Resume
+                                </button>
+                                <button
+                                    onClick={handleStopDeleteReport}
+                                    className="flex-1 px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg font-medium flex items-center justify-center gap-2 transition-colors"
+                                >
+                                    <StopCircle className="w-4 h-4" />
+                                    Stop
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {/* Delete Assets Status */}
+                {deleteAssetsStatus && (
+                    <div className="bg-gray-50 border border-gray-200 rounded-xl p-4">
+                        <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                                <Package className="w-5 h-5 text-purple-500" />
+                                <span className="font-medium text-gray-800">Delete Assets</span>
+                            </div>
+                            <div className={`flex items-center gap-2 ${getStatusColor(deleteAssetsStatus)}`}>
+                                <div className={`w-2 h-2 rounded-full ${deleteAssetsStatus === 'running' ? 'bg-green-500 animate-pulse' :
+                                    deleteAssetsStatus === 'paused' ? 'bg-yellow-500' :
+                                        deleteAssetsStatus === 'stopped' ? 'bg-red-500' : 'bg-blue-500'}`} />
+                                <span className="text-sm font-medium">{getStatusText(deleteAssetsStatus)}</span>
+                            </div>
+                        </div>
+
+                        {deleteAssetsStatus === 'running' && (
+                            <div className="flex gap-2 mt-3">
+                                <button
+                                    onClick={handlePauseDeleteIncompleteAssets}
+                                    className="flex-1 px-4 py-2 bg-yellow-500 hover:bg-yellow-600 text-white rounded-lg font-medium flex items-center justify-center gap-2 transition-colors"
+                                >
+                                    <PauseCircle className="w-4 h-4" />
+                                    Pause
+                                </button>
+                                <button
+                                    onClick={handleStopDeleteIncompleteAssets}
+                                    className="flex-1 px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg font-medium flex items-center justify-center gap-2 transition-colors"
+                                >
+                                    <StopCircle className="w-4 h-4" />
+                                    Stop
+                                </button>
+                            </div>
+                        )}
+
+                        {deleteAssetsStatus === 'paused' && (
+                            <div className="flex gap-2 mt-3">
+                                <button
+                                    onClick={handleResumeDeleteIncompleteAssets}
+                                    className="flex-1 px-4 py-2 bg-green-500 hover:bg-green-600 text-white rounded-lg font-medium flex items-center justify-center gap-2 transition-colors"
+                                >
+                                    <Play className="w-4 h-4" />
+                                    Resume
+                                </button>
+                                <button
+                                    onClick={handleStopDeleteIncompleteAssets}
+                                    className="flex-1 px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg font-medium flex items-center justify-center gap-2 transition-colors"
+                                >
+                                    <StopCircle className="w-4 h-4" />
+                                    Stop
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                )}
+
+                {/* Operation Result */}
+                {operationResult && (
+                    <div className={`border rounded-xl p-4 ${operationResult.status === 'SUCCESS'
+                        ? 'bg-green-50 border-green-200'
+                        : operationResult.status === 'STOPPED'
+                            ? 'bg-yellow-50 border-yellow-200'
+                            : operationResult.status === 'FAILED'
+                                ? 'bg-red-50 border-red-200'
+                                : 'bg-blue-50 border-blue-200'
+                        }`}>
+                        <div className="flex items-center gap-3">
+                            {operationResult.status === 'SUCCESS' && <CheckCircle className="w-5 h-5 text-green-500" />}
+                            {operationResult.status === 'STOPPED' && <AlertCircle className="w-5 h-5 text-yellow-500" />}
+                            {operationResult.status === 'FAILED' && <AlertCircle className="w-5 h-5 text-red-500" />}
+                            {!['SUCCESS', 'STOPPED', 'FAILED'].includes(operationResult.status) && <AlertCircle className="w-5 h-5 text-blue-500" />}
+
+                            <div>
+                                <p className="font-medium">
+                                    {operationResult.type === 'delete-report' && 'Delete Report'}
+                                    {operationResult.type === 'delete-incomplete-assets' && 'Delete Assets'}
+                                    {operationResult.type === 'pause' && `Pause ${operationResult.operation.replace('-', ' ')}`}
+                                    {operationResult.type === 'resume' && `Resume ${operationResult.operation.replace('-', ' ')}`}
+                                    {operationResult.type === 'stop' && `Stop ${operationResult.operation.replace('-', ' ')}`}
+                                </p>
+                                <p className="text-sm mt-1">{operationResult.message}</p>
+                                {operationResult.data?.reportId && (
+                                    <p className="text-xs mt-1">
+                                        Report ID: <strong>{operationResult.data.reportId}</strong>
+                                    </p>
+                                )}
+                                {operationResult.data?.rounds && (
+                                    <p className="text-xs mt-1">
+                                        Rounds: <strong>{operationResult.data.rounds}</strong>
+                                    </p>
+                                )}
+                                {operationResult.data?.deletedAssets && (
+                                    <p className="text-xs mt-1">
+                                        Assets Deleted: <strong>{operationResult.data.deletedAssets}</strong>
+                                    </p>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                )}
+            </div>
+        );
     };
 
     // Render status change result
@@ -226,6 +625,9 @@ const DeleteReport = () => {
                                             setDeleteRequested(false);
                                             setDeleteAssetsRequested(false);
                                             setStatusChangeResult(null);
+                                            setDeleteReportStatus(null);
+                                            setDeleteAssetsStatus(null);
+                                            setOperationResult(null);
                                         }}
                                         className="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 transition-colors"
                                         placeholder="Enter report ID to delete"
@@ -266,6 +668,9 @@ const DeleteReport = () => {
                                 )}
                             </div>
 
+                            {/* Operation Status Section */}
+                            {renderOperationStatus()}
+
                             {/* Status Change Section - ALWAYS VISIBLE */}
                             <div className="border border-gray-200 rounded-xl p-4 bg-gray-50">
                                 <h3 className="font-semibold text-gray-800 mb-3 flex items-center gap-2">
@@ -289,7 +694,7 @@ const DeleteReport = () => {
                             </div>
 
                             {/* Delete Request Sent Confirmation */}
-                            {deleteRequested && (
+                            {deleteRequested && !deleteReportStatus && (
                                 <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
                                     <div className="flex items-center gap-3">
                                         <CheckCircle className="w-5 h-5 text-blue-500" />
@@ -307,7 +712,7 @@ const DeleteReport = () => {
                             )}
 
                             {/* Delete Assets Request Sent Confirmation */}
-                            {deleteAssetsRequested && (
+                            {deleteAssetsRequested && !deleteAssetsStatus && (
                                 <div className="bg-purple-50 border border-purple-200 rounded-xl p-4">
                                     <div className="flex items-center gap-3">
                                         <CheckCircle className="w-5 h-5 text-purple-500" />
@@ -335,7 +740,7 @@ const DeleteReport = () => {
                             )}
 
                             {/* Warning Box */}
-                            {!deleteRequested && !deleteAssetsRequested && (
+                            {!deleteRequested && !deleteAssetsRequested && !deleteReportStatus && !deleteAssetsStatus && (
                                 <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
                                     <div className="flex items-center gap-3">
                                         <FileText className="w-5 h-5 text-yellow-500" />
@@ -349,23 +754,25 @@ const DeleteReport = () => {
                                 </div>
                             )}
 
-                            {/* Action Buttons */}
-                            <div className="flex flex-col sm:flex-row gap-3 pt-4">
-                                <button
-                                    onClick={handleDeleteReportAssets}
-                                    className="flex-1 px-6 py-3 bg-purple-600 hover:bg-purple-700 text-white rounded-lg font-semibold flex items-center justify-center gap-2 transition-colors"
-                                >
-                                    <Package className="w-4 h-4" />
-                                    Delete Only Assets
-                                </button>
-                                <button
-                                    onClick={handleDeleteReport}
-                                    className="flex-1 px-6 py-3 bg-red-600 hover:bg-red-700 text-white rounded-lg font-semibold flex items-center justify-center gap-2 transition-colors"
-                                >
-                                    <Trash2 className="w-4 h-4" />
-                                    Delete Report
-                                </button>
-                            </div>
+                            {/* Action Buttons - Only show if no operation is running */}
+                            {!deleteReportStatus && !deleteAssetsStatus && (
+                                <div className="flex flex-col sm:flex-row gap-3 pt-4">
+                                    <button
+                                        onClick={handleDeleteReportAssets}
+                                        className="flex-1 px-6 py-3 bg-purple-600 hover:bg-purple-700 text-white rounded-lg font-semibold flex items-center justify-center gap-2 transition-colors"
+                                    >
+                                        <Package className="w-4 h-4" />
+                                        Delete Only Assets
+                                    </button>
+                                    <button
+                                        onClick={handleDeleteReport}
+                                        className="flex-1 px-6 py-3 bg-red-600 hover:bg-red-700 text-white rounded-lg font-semibold flex items-center justify-center gap-2 transition-colors"
+                                    >
+                                        <Trash2 className="w-4 h-4" />
+                                        Delete Report
+                                    </button>
+                                </div>
+                            )}
                         </div>
                     </div>
                 </div>

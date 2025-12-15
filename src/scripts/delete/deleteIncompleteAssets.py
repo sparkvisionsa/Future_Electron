@@ -1,6 +1,14 @@
 import asyncio, re, json
 from scripts.core.utils import log
 from scripts.core.company_context import build_report_url, require_selected_company
+from scripts.core.processControl import (
+    get_process_manager,
+    check_and_wait,
+    create_process,
+    clear_process,
+    update_progress,
+    emit_progress
+)
 
 TABLE_CSS = "#m-table"
 ROW_CSS   = "#m-table tbody tr"
@@ -69,7 +77,6 @@ async def _find_rows(page):
     return []
 
 async def _parse_asset_rows(page):
-
     assets = []
     non_assets = 0
 
@@ -111,7 +118,13 @@ async def _parse_asset_rows(page):
     return assets, non_assets
 
 
-async def _delete_assets_by_macro_list(page, to_delete_set: set | None, _unused_concurrency: int = 0):
+async def _delete_assets_by_macro_list(page, to_delete_set: set | None, _unused_concurrency: int = 0, process_id: str = None):
+    # Check pause/stop state
+    if process_id:
+        action = await check_and_wait(process_id)
+        if action == "stop":
+            log(f"[deleter] Process {process_id} stopped by user request", "INFO")
+            return 0
 
     seen = set()
 
@@ -205,25 +218,31 @@ async def _delete_assets_by_macro_list(page, to_delete_set: set | None, _unused_
     return deleted
 
 
-async def delete_incomplete_assets_and_leave_one(page):
+async def delete_incomplete_assets_and_leave_one(page, process_id: str = None):
+    # Check pause/stop state
+    if process_id:
+        action = await check_and_wait(process_id)
+        if action == "stop":
+            log(f"Process {process_id} stopped by user request", "INFO")
+            return (None, 0, False)
 
-        assets, non_assets = await _parse_asset_rows(page)
-        if not assets:
-                log("No asset rows detected.", "INFO")
-                return (None, 0, False)
+    assets, non_assets = await _parse_asset_rows(page)
+    if not assets:
+        log("No asset rows detected.", "INFO")
+        return (None, 0, False)
 
-        # Delete ALL assets on this subpage (both complete and incomplete)
-        all_ids = [a["macro_id"] for a in assets]
-        total_assets = len(all_ids)
-        all_assets_flag = (total_assets > 0)
+    # Delete ALL assets on this subpage (both complete and incomplete)
+    all_ids = [a["macro_id"] for a in assets]
+    total_assets = len(all_ids)
+    all_assets_flag = (total_assets > 0)
 
-        kept = None
-        to_delete_set = set(all_ids)
-        log(f"Deleting ALL assets on subpage: {all_ids}", "INFO")
+    kept = None
+    to_delete_set = set(all_ids)
+    log(f"Deleting ALL assets on subpage: {all_ids}", "INFO")
 
-        deleted = await _delete_assets_by_macro_list(page, to_delete_set)
+    deleted = await _delete_assets_by_macro_list(page, to_delete_set, process_id=process_id)
 
-        return (kept, deleted, all_assets_flag)
+    return (kept, deleted, all_assets_flag)
 
 
 async def _elem_is_disabled(el) -> bool:
@@ -371,10 +390,16 @@ async def _main_next_if_enabled(page) -> bool:
         log(f"[main-next] click failed: {e}", "ERR")
         return False
 
-async def _process_current_main_page_with_subpages(page):
-
+async def _process_current_main_page_with_subpages(page, process_id: str = None):
     kept_ids = []
     deleted_total = 0
+
+    # Check pause/stop state
+    if process_id:
+        action = await check_and_wait(process_id)
+        if action == "stop":
+            log(f"Process {process_id} stopped by user request", "INFO")
+            return {"kept_ids": kept_ids, "deleted_total": deleted_total}
 
     # Ensure table is ready
     await _wait_for_rows(page, timeout=10.0)
@@ -395,8 +420,15 @@ async def _process_current_main_page_with_subpages(page):
     # Walk subpages forward: 1..N
     subpage_index = 1
     while True:
+        # Check pause/stop state before each subpage
+        if process_id:
+            action = await check_and_wait(process_id)
+            if action == "stop":
+                log(f"Process {process_id} stopped by user request", "INFO")
+                break
+
         await _wait_for_rows(page, timeout=8.0)
-        kept, deleted, all_incomplete = await delete_incomplete_assets_and_leave_one(page)
+        kept, deleted, all_incomplete = await delete_incomplete_assets_and_leave_one(page, process_id)
         # kept is always None with new behaviour, but keep structure for compatibility
         if kept:
             kept_ids.append(kept)
@@ -425,9 +457,18 @@ async def _process_current_main_page_with_subpages(page):
 
 
 
-async def delete_incomplete_assets_until_delete_or_empty(page, max_rounds: int = 10):
-
+async def delete_incomplete_assets_until_delete_or_empty(page, max_rounds: int = 10, process_id: str = None):
     for round_idx in range(1, max_rounds + 1):
+        # Check pause/stop state before each round
+        if process_id:
+            action = await check_and_wait(process_id)
+            if action == "stop":
+                log(f"Process {process_id} stopped by user request", "INFO")
+                return {
+                    "status": "STOPPED",
+                    "rounds": round_idx - 1,
+                }
+
         log(f"[loop] Cleanup round #{round_idx}", "STEP")
         # 1) Gather all assets visible in the table and delete them
         assets, _ = await _parse_asset_rows(page)
@@ -441,7 +482,7 @@ async def delete_incomplete_assets_until_delete_or_empty(page, max_rounds: int =
             }
 
         log(f"[loop] Round #{round_idx}: deleting ALL macros: {all_ids}", "INFO")
-        await _delete_assets_by_macro_list(page, set(all_ids))
+        await _delete_assets_by_macro_list(page, set(all_ids), process_id=process_id)
 
         # Wait for the table to settle after the batch of deletions
         await _wait_for_rows(page, timeout=10.0)
@@ -452,17 +493,23 @@ async def delete_incomplete_assets_until_delete_or_empty(page, max_rounds: int =
         "rounds": max_rounds,
     }
 
-async def delete_incomplete_assets_across_pages(page):
-
+async def delete_incomplete_assets_across_pages(page, process_id: str = None):
     total_deleted = 0
     main_pages = 0
 
     while True:
+        # Check pause/stop state before each main page
+        if process_id:
+            action = await check_and_wait(process_id)
+            if action == "stop":
+                log(f"Process {process_id} stopped by user request", "INFO")
+                break
+
         main_pages += 1
         log(f"[main-page] processing page #{main_pages}", "STEP")
 
         # Process current main page (all DataTables subpages 1..N)
-        res = await _process_current_main_page_with_subpages(page)
+        res = await _process_current_main_page_with_subpages(page, process_id)
         deleted_here = int(res.get("deleted_total") or 0)
         total_deleted += deleted_here
         log(
@@ -487,7 +534,6 @@ async def delete_incomplete_assets_across_pages(page):
     return summary
 
 async def _has_any_assets(page) -> bool:
-
     try:
         has = await page.evaluate("""
         () => {
@@ -502,6 +548,8 @@ async def _has_any_assets(page) -> bool:
 
 async def delete_incomplete_assets_flow(report_id: str, control_state=None, max_rounds: int = 10) -> dict:
     page = None
+    process_id = f"delete-incomplete-assets-{report_id}"
+    
     try:
         from scripts.core.browser import new_window
         try:
@@ -512,6 +560,17 @@ async def delete_incomplete_assets_flow(report_id: str, control_state=None, max_
                 "reportId": report_id,
                 "error": str(ctx_err)
             }
+        
+        # Create process state for pause/resume/stop
+        process_manager = get_process_manager()
+        process_state = create_process(
+            process_id=process_id,
+            process_type="delete-incomplete-assets",
+            total=max_rounds,
+            report_id=report_id,
+            max_rounds=max_rounds
+        )
+        
         url = build_report_url(report_id)
             
         # Open report page
@@ -519,11 +578,32 @@ async def delete_incomplete_assets_flow(report_id: str, control_state=None, max_
         page = await new_window(url)
 
         for round_idx in range(1, max_rounds + 1):
+            # Update progress
+            await update_progress(
+                process_id, 
+                completed=round_idx,
+                failed=0,
+                emit=True
+            )
+            
+            # Check pause/stop state
+            action = await check_and_wait(process_id)
+            if action == "stop":
+                log(f"Report {report_id}: Process stopped by user request in round {round_idx}", "INFO")
+                await page.close()
+                clear_process(process_id)
+                return {
+                    "status": "STOPPED",
+                    "reportId": report_id,
+                    "message": f"Asset deletion stopped in round {round_idx}",
+                    "rounds": round_idx,
+                }
+
             log(f"Report {report_id}: cleanup round #{round_idx}", "STEP")      
             await asyncio.sleep(2.0)
 
             log(f"Report {report_id}: Deleting assets across pages…", "INFO")
-            summary = await delete_incomplete_assets_across_pages(page)
+            summary = await delete_incomplete_assets_across_pages(page, process_id)
             log(f"Report {report_id}: pagination summary -> {summary}", "OK")
 
             total_deleted = int(summary.get("total_deleted") or 0)
@@ -552,6 +632,7 @@ async def delete_incomplete_assets_flow(report_id: str, control_state=None, max_
                     "INFO",
                 )
                 await page.close()
+                clear_process(process_id)
                 return {
                     "status": "ASSETS_REMAIN",
                     "reportId": report_id,
@@ -562,6 +643,7 @@ async def delete_incomplete_assets_flow(report_id: str, control_state=None, max_
             # No assets at all: cleanup complete
             log(f"Report {report_id}: No assets remain. Cleanup complete.", "INFO")
             await page.close()
+            clear_process(process_id)
             return {
                 "status": "SUCCESS",
                 "reportId": report_id,
@@ -575,6 +657,7 @@ async def delete_incomplete_assets_flow(report_id: str, control_state=None, max_
             "WARN",
         )
         await page.close()
+        clear_process(process_id)
         return {
             "status": "MAX_ROUNDS_REACHED",
             "reportId": report_id,
@@ -587,9 +670,77 @@ async def delete_incomplete_assets_flow(report_id: str, control_state=None, max_
         import traceback
         if page:
             await page.close()
+        clear_process(process_id)
         return {
             "status": "FAILED",
             "reportId": report_id,
             "error": str(e),
             "traceback": traceback.format_exc()
         }
+
+
+# ==============================
+# Pause/Resume/Stop handlers
+# ==============================
+
+async def pause_delete_incomplete_assets(report_id):
+    """Pause incomplete assets deletion process"""
+    try:
+        process_manager = get_process_manager()
+        state = process_manager.pause_process(f"delete-incomplete-assets-{report_id}")
+        
+        if not state:
+            return {
+                "status": "FAILED",
+                "error": f"No active deletion process found for report {report_id}"
+            }
+        
+        return {
+            "status": "SUCCESS",
+            "message": f"Paused assets deletion for report {report_id}",
+            "paused": state.paused
+        }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}
+
+
+async def resume_delete_incomplete_assets(report_id):
+    """Resume incomplete assets deletion process"""
+    try:
+        process_manager = get_process_manager()
+        state = process_manager.resume_process(f"delete-incomplete-assets-{report_id}")
+        
+        if not state:
+            return {
+                "status": "FAILED",
+                "error": f"No active deletion process found for report {report_id}"
+            }
+        
+        return {
+            "status": "SUCCESS",
+            "message": f"Resumed assets deletion for report {report_id}",
+            "paused": state.paused
+        }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}
+
+
+async def stop_delete_incomplete_assets(report_id):
+    """Stop incomplete assets deletion process"""
+    try:
+        process_manager = get_process_manager()
+        state = process_manager.stop_process(f"delete-incomplete-assets-{report_id}")
+        
+        if not state:
+            return {
+                "status": "FAILED",
+                "error": f"No active deletion process found for report {report_id}"
+            }
+        
+        return {
+            "status": "SUCCESS",
+            "message": f"Stopped assets deletion for report {report_id}",
+            "stopped": state.stopped
+        }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}

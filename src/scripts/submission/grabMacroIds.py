@@ -3,6 +3,14 @@ from datetime import datetime
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from scripts.core.utils import wait_for_element, safe_query_selector_all, wait_for_table_rows
+from scripts.core.processControl import (
+    get_process_manager,
+    check_and_wait,
+    create_process,
+    clear_process,
+    update_progress,
+    emit_progress
+)
 
 # MongoDB connection setup
 def get_motor_client():
@@ -111,12 +119,19 @@ def get_balanced_page_distribution(total_pages, num_tabs):
     
     return distribution
 
-async def get_macro_ids_from_page(page, base_url, page_num, tab_id):
+async def get_macro_ids_from_page(page, base_url, page_num, tab_id, process_id=None):
 
     local_macro_ids = []
     print(f"[MACRO_ID-TAB-{tab_id}] Processing page {page_num}", file=sys.stderr)
     
     try:
+        # Check pause/stop state
+        if process_id:
+            action = await check_and_wait(process_id)
+            if action == "stop":
+                print(f"[MACRO_ID-TAB-{tab_id}] Process stopped by user request", file=sys.stderr)
+                return local_macro_ids
+        
         # Navigate to the page
         page_url = f"{base_url}?page={page_num}" if page_num > 1 else base_url
         await page.get(page_url)
@@ -124,6 +139,13 @@ async def get_macro_ids_from_page(page, base_url, page_num, tab_id):
         
         # Process all sub-pages (internal pagination)
         while True:
+            # Check pause/stop state
+            if process_id:
+                action = await check_and_wait(process_id)
+                if action == "stop":
+                    print(f"[MACRO_ID-TAB-{tab_id}] Process stopped by user request", file=sys.stderr)
+                    return local_macro_ids
+            
             await asyncio.sleep(2)
             
             table_ready = await wait_for_table_rows(page, timeout=100)
@@ -141,6 +163,13 @@ async def get_macro_ids_from_page(page, base_url, page_num, tab_id):
             
             processed_count = 0
             for i, macro_cell in enumerate(macro_cells):
+                # Check pause/stop state periodically
+                if process_id and i % 5 == 0:
+                    action = await check_and_wait(process_id)
+                    if action == "stop":
+                        print(f"[MACRO_ID-TAB-{tab_id}] Process stopped by user request", file=sys.stderr)
+                        return local_macro_ids
+                
                 try:
                     macro_id_text = macro_cell.text if macro_cell else None
                     if not macro_id_text or not macro_id_text.strip():
@@ -216,6 +245,17 @@ async def get_all_macro_ids_parallel(browser, report_id, tabs_num=3):
             print("[MACRO_ID] No report_id provided", file=sys.stderr)
             return []
         
+        # Create process state for pause/resume/stop
+        process_id = f"grab-macro-ids-{report_id}"
+        process_manager = get_process_manager()
+        process_state = create_process(
+            process_id=process_id,
+            process_type="grab-macro-ids",
+            total=100,  # We'll update this once we know total pages
+            report_id=report_id,
+            tabs_num=tabs_num
+        )
+        
         base_url = f"https://qima.taqeem.sa/report/{report_id}"
         main_page = browser.tabs[0]
         await main_page.get(base_url)
@@ -233,6 +273,16 @@ async def get_all_macro_ids_parallel(browser, report_id, tabs_num=3):
         
         total_pages = max(page_numbers) if page_numbers else 1
         print(f"[MACRO_ID] Found {total_pages} pages to scan", file=sys.stderr)
+        
+        # Update total in process state
+        await update_progress(
+            process_id, 
+            completed=0,
+            failed=0,
+            total=total_pages,
+            emit=True
+        )
+        
         await update_report_pg_count(report_id, total_pages)
         
         # Create pages for parallel processing
@@ -254,8 +304,25 @@ async def get_all_macro_ids_parallel(browser, report_id, tabs_num=3):
             print(f"[MACRO_ID-TAB-{tab_id}] Processing pages: {page_numbers_chunk}", file=sys.stderr)
             
             for page_num in page_numbers_chunk:
-                page_macro_ids = await get_macro_ids_from_page(page, base_url, page_num, tab_id)
+                # Check pause/stop state before processing each page
+                action = await check_and_wait(process_id)
+                if action == "stop":
+                    print(f"[MACRO_ID-TAB-{tab_id}] Process stopped by user request", file=sys.stderr)
+                    break
+                
+                page_macro_ids = await get_macro_ids_from_page(page, base_url, page_num, tab_id, process_id)
                 local_macro_ids_with_pages.extend(page_macro_ids)
+                
+                # Update progress after each page
+                async with macro_ids_lock:
+                    current_total = len(all_macro_ids_with_pages) + len(local_macro_ids_with_pages)
+                
+                await update_progress(
+                    process_id,
+                    completed=len(page_numbers_chunk[:page_numbers_chunk.index(page_num) + 1]),
+                    emit=True
+                )
+                emit_progress(process_id, current_item=f"Page {page_num}", message=f"Processed page {page_num}")
             
             async with macro_ids_lock:
                 all_macro_ids_with_pages.extend(local_macro_ids_with_pages)
@@ -284,13 +351,20 @@ async def get_all_macro_ids_parallel(browser, report_id, tabs_num=3):
             else:
                 print(f"[MACRO_ID] Failed to update report in MongoDB", file=sys.stderr)
         
+        clear_process(process_id)
+        
         return {"status": "SUCCESS", "macro_ids_with_pages": all_macro_ids_with_pages}
         
     except Exception as e:
         print(f"[MACRO_ID] Error in get_all_macro_ids_parallel: {str(e)}", file=sys.stderr)
         import traceback
         traceback.print_exc()
-        return []
+        
+        # Clear process on error
+        process_id = f"grab-macro-ids-{report_id}"
+        clear_process(process_id)
+        
+        return {"status": "FAILED", "error": str(e)}
 
 
 async def retry_get_missing_macro_ids(browser, report_id, tabs_num=3, db_name='test', collection_name='reports'):
@@ -299,6 +373,17 @@ async def retry_get_missing_macro_ids(browser, report_id, tabs_num=3, db_name='t
     """
     client = None
     try:
+        # Create process state for pause/resume/stop
+        process_id = f"retry-macro-ids-{report_id}"
+        process_manager = get_process_manager()
+        process_state = create_process(
+            process_id=process_id,
+            process_type="retry-macro-ids",
+            total=100,  # We'll update this once we know missing pages
+            report_id=report_id,
+            tabs_num=tabs_num
+        )
+        
         client = get_motor_client()
         db = client[db_name]
         collection = db[collection_name]
@@ -307,12 +392,14 @@ async def retry_get_missing_macro_ids(browser, report_id, tabs_num=3, db_name='t
         report = await collection.find_one({'report_id': report_id})
         if not report:
             print(f"[MONGO_DB] ERROR: Report with ID {report_id} not found", file=sys.stderr)
-            return False
+            clear_process(process_id)
+            return {"status": "FAILED", "error": f"Report with ID {report_id} not found"}
 
         existing_assets = report.get('asset_data', [])
         if not existing_assets:
             print(f"[MONGO_DB] ERROR: No asset_data found in report {report_id}", file=sys.stderr)
-            return False
+            clear_process(process_id)
+            return {"status": "FAILED", "error": f"No asset_data found in report {report_id}"}
 
         # Determine total pages from live site (like existing logic)
         base_url = f"https://qima.taqeem.sa/report/{report_id}"
@@ -346,9 +433,19 @@ async def retry_get_missing_macro_ids(browser, report_id, tabs_num=3, db_name='t
         
         if not missing_pg_nos:
             print(f"[RETRY] No missing pages to retry for report {report_id}", file=sys.stderr)
+            clear_process(process_id)
             return {"status": "NO_MISSING_PAGES", "macro_ids_with_pages": []}
 
         print(f"[RETRY] Missing page numbers to process: {missing_pg_nos}", file=sys.stderr)
+        
+        # Update total in process state
+        await update_progress(
+            process_id, 
+            completed=0,
+            failed=0,
+            total=len(missing_pg_nos),
+            emit=True
+        )
 
         # Prepare tabs (reuse existing logic)
         pages = [main_page] + [
@@ -368,9 +465,27 @@ async def retry_get_missing_macro_ids(browser, report_id, tabs_num=3, db_name='t
 
         async def process_pages_chunk(page, page_numbers_chunk, tab_id):
             local = []
-            for pg in page_numbers_chunk:
-                ids = await get_macro_ids_from_page(page, base_url, pg, tab_id)
+            for idx, pg in enumerate(page_numbers_chunk):
+                # Check pause/stop state before processing each page
+                action = await check_and_wait(process_id)
+                if action == "stop":
+                    print(f"[RETRY-TAB-{tab_id}] Process stopped by user request", file=sys.stderr)
+                    break
+                
+                ids = await get_macro_ids_from_page(page, base_url, pg, tab_id, process_id)
                 local.extend(ids)
+                
+                # Update progress
+                async with macro_ids_lock:
+                    current_total = len(all_macro_ids_with_pages) + len(local)
+                
+                await update_progress(
+                    process_id,
+                    completed=len(page_numbers_chunk[:idx + 1]),
+                    emit=True
+                )
+                emit_progress(process_id, current_item=f"Page {pg}", message=f"Processed page {pg}")
+            
             async with macro_ids_lock:
                 all_macro_ids_with_pages.extend(local)
             print(f"[RETRY-TAB-{tab_id}] Completed pages {page_numbers_chunk}, found {len(local)} macro IDs", file=sys.stderr)
@@ -418,15 +533,158 @@ async def retry_get_missing_macro_ids(browser, report_id, tabs_num=3, db_name='t
                 {'$set': {'asset_data': updated_assets, 'updatedAt': datetime.now()}}
             )
             print(f"[MONGO_DB] Retry update for report {report_id}, modified_count={result.modified_count}", file=sys.stderr)
+            
+            clear_process(process_id)
             return {"status": "RETRY_SUCCESS", "macro_ids_with_pages": all_macro_ids_with_pages}
         else:
             print(f"[RETRY] No new macro IDs found during retry for report {report_id}", file=sys.stderr)
+            clear_process(process_id)
             return {"status": "RETRY_NO_IDS_FOUND", "macro_ids_with_pages": []}
 
     except Exception as e:
         print(f"[RETRY] Error in retry_get_missing_macro_ids: {e}", file=sys.stderr)
-        import traceback; traceback.print_exc()
-        return False
+        import traceback
+        traceback.print_exc()
+        
+        # Clear process on error
+        process_id = f"retry-macro-ids-{report_id}"
+        clear_process(process_id)
+        
+        return {"status": "FAILED", "error": str(e)}
     finally:
         if client:
             client.close()
+
+
+# ==============================
+# Pause/Resume/Stop handlers for grab-macro-ids
+# ==============================
+
+async def pause_grab_macro_ids(report_id):
+    """Pause macro ID grabbing process"""
+    try:
+        process_manager = get_process_manager()
+        state = process_manager.pause_process(f"grab-macro-ids-{report_id}")
+        
+        if not state:
+            return {
+                "status": "FAILED",
+                "error": f"No active macro ID grabbing process found for report {report_id}"
+            }
+        
+        return {
+            "status": "SUCCESS",
+            "message": f"Paused macro ID grabbing for report {report_id}",
+            "paused": state.paused
+        }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}
+
+
+async def resume_grab_macro_ids(report_id):
+    """Resume macro ID grabbing process"""
+    try:
+        process_manager = get_process_manager()
+        state = process_manager.resume_process(f"grab-macro-ids-{report_id}")
+        
+        if not state:
+            return {
+                "status": "FAILED",
+                "error": f"No active macro ID grabbing process found for report {report_id}"
+            }
+        
+        return {
+            "status": "SUCCESS",
+            "message": f"Resumed macro ID grabbing for report {report_id}",
+            "paused": state.paused
+        }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}
+
+
+async def stop_grab_macro_ids(report_id):
+    """Stop macro ID grabbing process"""
+    try:
+        process_manager = get_process_manager()
+        state = process_manager.stop_process(f"grab-macro-ids-{report_id}")
+        
+        if not state:
+            return {
+                "status": "FAILED",
+                "error": f"No active macro ID grabbing process found for report {report_id}"
+            }
+        
+        return {
+            "status": "SUCCESS",
+            "message": f"Stopped macro ID grabbing for report {report_id}",
+            "stopped": state.stopped
+        }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}
+
+
+# ==============================
+# Pause/Resume/Stop handlers for retry-macro-ids
+# ==============================
+
+async def pause_retry_macro_ids(report_id):
+    """Pause retry macro ID process"""
+    try:
+        process_manager = get_process_manager()
+        state = process_manager.pause_process(f"retry-macro-ids-{report_id}")
+        
+        if not state:
+            return {
+                "status": "FAILED",
+                "error": f"No active retry macro ID process found for report {report_id}"
+            }
+        
+        return {
+            "status": "SUCCESS",
+            "message": f"Paused retry macro ID process for report {report_id}",
+            "paused": state.paused
+        }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}
+
+
+async def resume_retry_macro_ids(report_id):
+    """Resume retry macro ID process"""
+    try:
+        process_manager = get_process_manager()
+        state = process_manager.resume_process(f"retry-macro-ids-{report_id}")
+        
+        if not state:
+            return {
+                "status": "FAILED",
+                "error": f"No active retry macro ID process found for report {report_id}"
+            }
+        
+        return {
+            "status": "SUCCESS",
+            "message": f"Resumed retry macro ID process for report {report_id}",
+            "paused": state.paused
+        }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}
+
+
+async def stop_retry_macro_ids(report_id):
+    """Stop retry macro ID process"""
+    try:
+        process_manager = get_process_manager()
+        state = process_manager.stop_process(f"retry-macro-ids-{report_id}")
+        
+        if not state:
+            return {
+                "status": "FAILED",
+                "error": f"No active retry macro ID process found for report {report_id}"
+            }
+        
+        return {
+            "status": "SUCCESS",
+            "message": f"Stopped retry macro ID process for report {report_id}",
+            "stopped": state.stopped
+        }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}

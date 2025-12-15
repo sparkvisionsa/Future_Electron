@@ -5,6 +5,14 @@ from scripts.core.utils import log
 from scripts.core.browser import new_tab, new_window  # reliable new-tab open in nodriver
 from scripts.core.company_context import build_report_url, require_selected_company
 from .assetEdit import edit_macro_and_save
+from scripts.core.processControl import (
+    get_process_manager,
+    check_and_wait,
+    create_process,
+    clear_process,
+    update_progress,
+    emit_progress
+)
 
 # ==============================
 # Selectors / Constants
@@ -142,103 +150,6 @@ async def _ensure_confirm_ok(page):
         log(f"[confirm] Patch failed: {e}", "ERR")
         return 0
 
-# ... your other imports and helpers (like _parse_asset_rows) ...
-
-
-async def create_one_asset_and_get_macro(page, report_id: str) -> str | None:
-    create_url = f"https://qima.taqeem.sa/report/asset/create/{report_id}"
-    log(f"[create-asset] Opening create page: {create_url}", "STEP")
-
-    await page.get(create_url)
-    await asyncio.sleep(1.0)
-
-    # 1) Set macros = 1
-    try:
-        ok = await page.evaluate("""
-        (() => {
-            const el = document.querySelector("input#macros");
-            if (!el) return false;
-            el.value = "1";
-            el.dispatchEvent(new Event('input', { bubbles: true }));
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-            return true;
-        })()
-        """)
-        log(f"[create-asset] set macros=1 -> ok={ok}", "INFO")
-        if not ok:
-            log("[create-asset] #macros input not found or not set.", "ERR")
-            return None
-    except Exception as e:
-        log(f"[create-asset] failed to set macros=1: {e}", "ERR")
-        return None
-
-    # 2) Click Save button ("حفظ" / "Save")
-    try:
-        clicked = await page.evaluate("""
-        (() => {
-            const btns = Array.from(document.querySelectorAll("input[type=submit], button"));
-            for (const b of btns) {
-                const t = (b.value || b.innerText || "").trim();
-                if (t.includes("حفظ") || t.toLowerCase().includes("save")) {
-                    b.click();
-                    return true;
-                }
-            }
-            return false;
-        })()
-        """)
-        log(f"[create-asset] clicked save button -> {clicked}", "INFO")
-        if not clicked:
-            log("[create-asset] Save button not found.", "ERR")
-            return None
-    except Exception as e:
-        log(f"[create-asset] save click failed: {e}", "ERR")
-        return None
-
-    # Give Qima time to redirect
-    await asyncio.sleep(2.0)
-
-    # 3) Try to read macro id from current URL
-    try:
-        href = await page.evaluate("() => window.location.href || ''")
-    except Exception:
-        href = ""
-
-    if href:
-        m = re.search(r"/report/macro/(\d+)/(?:edit|show)", href)
-        if m:
-            macro_id = m.group(1)
-            log(f"[create-asset] Detected new macro_id from URL: {macro_id}", "OK")
-            return macro_id
-
-    log("[create-asset] Could not detect macro_id from redirect URL, trying table fallback…", "WARN")
-
-    # 4) Fallback: open report page and parse first/last asset row
-    try:
-        report_url = build_report_url(report_id)
-        log(f"[create-asset] Opening report page to discover macro id: {report_url}", "INFO")
-        page2 = await page.get(report_url)
-        await asyncio.sleep(1.0)
-
-
-        assets, _ = await _parse_asset_rows(page2)
-        if not assets:
-            log("[create-asset] Fallback parse: no assets found after creation.", "ERR")
-            return None
-
-        if len(assets) == 1:
-            macro_id = assets[0]["macro_id"]
-            log(f"[create-asset] Fallback parse: single asset macro_id={macro_id}", "OK")
-            return macro_id
-
-        # If more than one, pick the last (usually the newest)
-        macro_id = assets[-1]["macro_id"]
-        log(f"[create-asset] Fallback parse: chose last asset macro_id={macro_id}", "OK")
-        return macro_id
-
-    except Exception as e:
-        log(f"[create-asset] error while discovering new macro id: {e}", "ERR")
-        return None
 
 async def _try_click_inline_confirm(page):
     """If the /delete page shows an on-page confirm, click it (Arabic/English)."""
@@ -326,7 +237,7 @@ async def _find_rows(page):
     return []
 
 
-# ==============================s
+# ==============================
 # Parsing assets on current (sub)page
 # ==============================
 
@@ -393,7 +304,7 @@ async def _open_new_tab(url: str, pause: float = 1.0, retries: int = 2):
     raise RuntimeError("new-tab-open-failed")
 
 
-async def _delete_assets_by_macro_list(page, to_delete_set: set | None, _unused_concurrency: int = 0):
+async def _delete_assets_by_macro_list(page, to_delete_set: set | None, _unused_concurrency: int = 0, process_id: str = None):
     seen = set()
 
     rows = await _find_rows(page)
@@ -428,6 +339,13 @@ async def _delete_assets_by_macro_list(page, to_delete_set: set | None, _unused_
         return 0
 
     log(f"[deleter] pending macros on this subpage: {pending_macros}", "INFO")
+
+    # Check pause/stop state before deleting
+    if process_id:
+        action = await check_and_wait(process_id)
+        if action == "stop":
+            log(f"[deleter] Process {process_id} stopped by user request", "INFO")
+            return 0
 
     # Prepare all delete URLs
     delete_urls = [
@@ -489,7 +407,7 @@ async def _delete_assets_by_macro_list(page, to_delete_set: set | None, _unused_
     return deleted
 
 
-async def delete_incomplete_assets_and_leave_one(page):
+async def delete_incomplete_assets_and_leave_one(page, process_id: str = None):
     """
     Delete assets with 'غير مكتملة' on the CURRENT subpage.
     NEW BEHAVIOUR:
@@ -513,14 +431,20 @@ async def delete_incomplete_assets_and_leave_one(page):
         "INFO"
     )
 
+    # Check pause/stop state
+    if process_id:
+        action = await check_and_wait(process_id)
+        if action == "stop":
+            log(f"Process {process_id} stopped by user request", "INFO")
+            return (None, 0, all_incomplete)
+
     # NEW: always delete all incomplete assets; do not intentionally keep one.
     kept = None
     to_delete = incomplete_ids
     log(f"Deleting incomplete assets only: {to_delete}", "INFO")
 
-    to_delete_set = set(to_delete)
-    param = to_delete_set if len(to_delete_set) > 0 else None
-    deleted = await _delete_assets_by_macro_list(page, param)
+    to_delete_set = set(to_delete) if len(to_delete) > 0 else None
+    deleted = await _delete_assets_by_macro_list(page, to_delete_set, process_id=process_id)
 
     return (kept, deleted, all_incomplete)
 
@@ -679,7 +603,7 @@ async def _main_next_if_enabled(page) -> bool:
 # Page processors (subpages within a main page)
 # ==============================
 
-async def _process_current_main_page_with_subpages(page):
+async def _process_current_main_page_with_subpages(page, process_id: str = None):
     """
     On the current main page:
       1) Go to subpage 1 (click 'previous' until it stops changing).
@@ -689,6 +613,13 @@ async def _process_current_main_page_with_subpages(page):
     """
     kept_ids = []
     deleted_total = 0
+
+    # Check pause/stop state
+    if process_id:
+        action = await check_and_wait(process_id)
+        if action == "stop":
+            log(f"Process {process_id} stopped by user request", "INFO")
+            return {"kept_ids": kept_ids, "deleted_total": deleted_total}
 
     # Ensure table is ready
     await _wait_for_rows(page, timeout=10.0)
@@ -709,8 +640,15 @@ async def _process_current_main_page_with_subpages(page):
     # Walk subpages forward: 1..N
     subpage_index = 1
     while True:
+        # Check pause/stop state before each subpage
+        if process_id:
+            action = await check_and_wait(process_id)
+            if action == "stop":
+                log(f"Process {process_id} stopped by user request", "INFO")
+                break
+
         await _wait_for_rows(page, timeout=8.0)
-        kept, deleted, all_incomplete = await delete_incomplete_assets_and_leave_one(page)
+        kept, deleted, all_incomplete = await delete_incomplete_assets_and_leave_one(page, process_id)
         # kept is always None with new behaviour, but keep structure for compatibility
         if kept:
             kept_ids.append(kept)
@@ -737,9 +675,7 @@ async def _process_current_main_page_with_subpages(page):
 # Orchestrator (top-level)
 # ==============================
 
-
-
-async def delete_incomplete_assets_until_delete_or_empty(page, max_rounds: int = 10):
+async def delete_incomplete_assets_until_delete_or_empty(page, max_rounds: int = 10, process_id: str = None):
     """
     High-level loop for a SINGLE report page:
       - On each round:
@@ -759,6 +695,16 @@ async def delete_incomplete_assets_until_delete_or_empty(page, max_rounds: int =
     after you've navigated to whichever main page you care about.
     """
     for round_idx in range(1, max_rounds + 1):
+        # Check pause/stop state before each round
+        if process_id:
+            action = await check_and_wait(process_id)
+            if action == "stop":
+                log(f"Process {process_id} stopped by user request", "INFO")
+                return {
+                    "status": "STOPPED",
+                    "rounds": round_idx - 1,
+                }
+
         log(f"[loop] Cleanup round #{round_idx}", "STEP")
 
         # 1) Try the Delete Report button on this page
@@ -782,7 +728,7 @@ async def delete_incomplete_assets_until_delete_or_empty(page, max_rounds: int =
             }
 
         log(f"[loop] Round #{round_idx}: deleting incomplete macros: {incomplete_ids}", "INFO")
-        await _delete_assets_by_macro_list(page, set(incomplete_ids))
+        await _delete_assets_by_macro_list(page, set(incomplete_ids), process_id=process_id)
 
         # Wait for the table to settle after the batch of deletions
         await _wait_for_rows(page, timeout=10.0)
@@ -793,7 +739,7 @@ async def delete_incomplete_assets_until_delete_or_empty(page, max_rounds: int =
         "rounds": max_rounds,
     }
 
-async def delete_incomplete_assets_across_pages(page):
+async def delete_incomplete_assets_across_pages(page, process_id: str = None):
     """
     Full crawl of the report's assets table:
 
@@ -813,11 +759,18 @@ async def delete_incomplete_assets_across_pages(page):
     main_pages = 0
 
     while True:
+        # Check pause/stop state before each main page
+        if process_id:
+            action = await check_and_wait(process_id)
+            if action == "stop":
+                log(f"Process {process_id} stopped by user request", "INFO")
+                break
+
         main_pages += 1
         log(f"[main-page] processing page #{main_pages}", "STEP")
 
         # Process current main page (all DataTables subpages 1..N)
-        res = await _process_current_main_page_with_subpages(page)
+        res = await _process_current_main_page_with_subpages(page, process_id)
         deleted_here = int(res.get("deleted_total") or 0)
         total_deleted += deleted_here
         log(
@@ -842,7 +795,6 @@ async def delete_incomplete_assets_across_pages(page):
     return summary
 
 
-
 async def _has_any_assets(page) -> bool:
     """
     Check if there are ANY asset rows in the table (#m-table).
@@ -861,8 +813,112 @@ async def _has_any_assets(page) -> bool:
         return False
 
 
+async def create_one_asset_and_get_macro(page, report_id: str, process_id: str = None) -> str | None:
+    create_url = f"https://qima.taqeem.sa/report/asset/create/{report_id}"
+    log(f"[create-asset] Opening create page: {create_url}", "STEP")
+
+    await page.get(create_url)
+    await asyncio.sleep(1.0)
+
+    # Check pause/stop state
+    if process_id:
+        action = await check_and_wait(process_id)
+        if action == "stop":
+            log(f"Process {process_id} stopped by user request", "INFO")
+            return None
+
+    # 1) Set macros = 1
+    try:
+        ok = await page.evaluate("""
+        (() => {
+            const el = document.querySelector("input#macros");
+            if (!el) return false;
+            el.value = "1";
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return true;
+        })()
+        """)
+        log(f"[create-asset] set macros=1 -> ok={ok}", "INFO")
+        if not ok:
+            log("[create-asset] #macros input not found or not set.", "ERR")
+            return None
+    except Exception as e:
+        log(f"[create-asset] failed to set macros=1: {e}", "ERR")
+        return None
+
+    # 2) Click Save button ("حفظ" / "Save")
+    try:
+        clicked = await page.evaluate("""
+        (() => {
+            const btns = Array.from(document.querySelectorAll("input[type=submit], button"));
+            for (const b of btns) {
+                const t = (b.value || b.innerText || "").trim();
+                if (t.includes("حفظ") || t.toLowerCase().includes("save")) {
+                    b.click();
+                    return true;
+                }
+            }
+            return false;
+        })()
+        """)
+        log(f"[create-asset] clicked save button -> {clicked}", "INFO")
+        if not clicked:
+            log("[create-asset] Save button not found.", "ERR")
+            return None
+    except Exception as e:
+        log(f"[create-asset] save click failed: {e}", "ERR")
+        return None
+
+    # Give Qima time to redirect
+    await asyncio.sleep(2.0)
+
+    # 3) Try to read macro id from current URL
+    try:
+        href = await page.evaluate("() => window.location.href || ''")
+    except Exception:
+        href = ""
+
+    if href:
+        m = re.search(r"/report/macro/(\d+)/(?:edit|show)", href)
+        if m:
+            macro_id = m.group(1)
+            log(f"[create-asset] Detected new macro_id from URL: {macro_id}", "OK")
+            return macro_id
+
+    log("[create-asset] Could not detect macro_id from redirect URL, trying table fallback…", "WARN")
+
+    # 4) Fallback: open report page and parse first/last asset row
+    try:
+        report_url = build_report_url(report_id)
+        log(f"[create-asset] Opening report page to discover macro id: {report_url}", "INFO")
+        page2 = await page.get(report_url)
+        await asyncio.sleep(1.0)
+
+        assets, _ = await _parse_asset_rows(page2)
+        if not assets:
+            log("[create-asset] Fallback parse: no assets found after creation.", "ERR")
+            return None
+
+        if len(assets) == 1:
+            macro_id = assets[0]["macro_id"]
+            log(f"[create-asset] Fallback parse: single asset macro_id={macro_id}", "OK")
+            return macro_id
+
+        # If more than one, pick the last (usually the newest)
+        macro_id = assets[-1]["macro_id"]
+        log(f"[create-asset] Fallback parse: chose last asset macro_id={macro_id}", "OK")
+        return macro_id
+
+    except Exception as e:
+        log(f"[create-asset] error while discovering new macro id: {e}", "ERR")
+        return None
+
+
 async def delete_report_flow(report_id: str, max_rounds: int = 10):
     page = None
+    process_id = f"delete-report-{report_id}"
+    
     try:
         try:
             require_selected_company()
@@ -872,6 +928,16 @@ async def delete_report_flow(report_id: str, max_rounds: int = 10):
                 "reportId": report_id,
                 "error": str(ctx_err)
             }
+
+        # Create process state for pause/resume/stop
+        process_manager = get_process_manager()
+        process_state = create_process(
+            process_id=process_id,
+            process_type="delete-report",
+            total=max_rounds,
+            report_id=report_id,
+            max_rounds=max_rounds
+        )
 
         def _load_template():
             try:
@@ -883,10 +949,36 @@ async def delete_report_flow(report_id: str, max_rounds: int = 10):
                 return {}
 
         total_deleted_overall = 0
+        current_round = 0
 
         report_url = build_report_url(report_id)
         page = await new_window(report_url)
+        
         for round_idx in range(1, max_rounds + 1):
+            current_round = round_idx
+            
+            # Update progress
+            await update_progress(
+                process_id, 
+                completed=round_idx,
+                failed=0,
+                emit=True
+            )
+            
+            # Check pause/stop state
+            action = await check_and_wait(process_id)
+            if action == "stop":
+                log(f"Report {report_id}: Process stopped by user request in round {round_idx}", "INFO")
+                await page.close()
+                clear_process(process_id)
+                return {
+                    "status": "STOPPED",
+                    "message": f"Report deletion stopped in round {round_idx}",
+                    "reportId": report_id,
+                    "rounds": round_idx,
+                    "deletedAssets": total_deleted_overall
+                }
+
             log(f"Report {report_id}: cleanup round #{round_idx}", "STEP")
 
             # 1) Open the report page
@@ -897,6 +989,7 @@ async def delete_report_flow(report_id: str, max_rounds: int = 10):
             if await try_delete_report(page):
                 log(f"Report {report_id}: Delete Report button clicked in round #{round_idx}.", "OK")
                 await page.close()
+                clear_process(process_id)
                 return {
                     "status": "SUCCESS",
                     "message": f"Report deleted in round {round_idx}",
@@ -911,7 +1004,7 @@ async def delete_report_flow(report_id: str, max_rounds: int = 10):
                 f"Deleting incomplete assets across pages…",
                 "INFO",
             )
-            summary = await delete_incomplete_assets_across_pages(page)
+            summary = await delete_incomplete_assets_across_pages(page, process_id)
             log(f"Report {report_id}: pagination summary -> {summary}", "OK")
 
             total_deleted = int(summary.get("total_deleted") or 0)
@@ -946,6 +1039,7 @@ async def delete_report_flow(report_id: str, max_rounds: int = 10):
                     "INFO",
                 )
                 await page.close()
+                clear_process(process_id)
                 return {
                     "status": "PARTIAL",
                     "message": "Assets exist but none are incomplete/deletable",
@@ -956,7 +1050,7 @@ async def delete_report_flow(report_id: str, max_rounds: int = 10):
 
             # 👉 No assets at all: create ONE asset and then fill it using template
             log(f"Report {report_id}: No assets remain. Creating one new asset…", "INFO")
-            macro_id = await create_one_asset_and_get_macro(page, report_id)
+            macro_id = await create_one_asset_and_get_macro(page, report_id, process_id)
             if not macro_id:
                 log(
                     f"Report {report_id}: Failed to create or detect new asset macro id. "
@@ -964,6 +1058,7 @@ async def delete_report_flow(report_id: str, max_rounds: int = 10):
                     "ERR",
                 )
                 await page.close()
+                clear_process(process_id)
                 return {
                     "status": "FAILED",
                     "message": "Failed to create new asset",
@@ -985,6 +1080,7 @@ async def delete_report_flow(report_id: str, max_rounds: int = 10):
                     "ERR",
                 )
                 await page.close()
+                clear_process(process_id)
                 return {
                     "status": "FAILED",
                     "message": f"Failed to fill/save asset {macro_id}",
@@ -1009,6 +1105,7 @@ async def delete_report_flow(report_id: str, max_rounds: int = 10):
             "WARN",
         )
         await page.close()
+        clear_process(process_id)
         return {
             "status": "MAX_ROUNDS_REACHED",
             "message": f"Reached max rounds ({max_rounds}) without completing deletion",
@@ -1021,8 +1118,76 @@ async def delete_report_flow(report_id: str, max_rounds: int = 10):
         log(f"Report {report_id}: Exception in delete_report_flow: {e}", "ERR")
         if page:
             await page.close()
+        clear_process(process_id)
         return {
             "status": "FAILED",
             "error": str(e),
             "reportId": report_id
         }
+
+
+# ==============================
+# Pause/Resume/Stop handlers for delete report
+# ==============================
+
+async def pause_delete_report(report_id):
+    """Pause report deletion process"""
+    try:
+        process_manager = get_process_manager()
+        state = process_manager.pause_process(f"delete-report-{report_id}")
+        
+        if not state:
+            return {
+                "status": "FAILED",
+                "error": f"No active delete process found for report {report_id}"
+            }
+        
+        return {
+            "status": "SUCCESS",
+            "message": f"Paused report deletion for report {report_id}",
+            "paused": state.paused
+        }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}
+
+
+async def resume_delete_report(report_id):
+    """Resume report deletion process"""
+    try:
+        process_manager = get_process_manager()
+        state = process_manager.resume_process(f"delete-report-{report_id}")
+        
+        if not state:
+            return {
+                "status": "FAILED",
+                "error": f"No active delete process found for report {report_id}"
+            }
+        
+        return {
+            "status": "SUCCESS",
+            "message": f"Resumed report deletion for report {report_id}",
+            "paused": state.paused
+        }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}
+
+
+async def stop_delete_report(report_id):
+    """Stop report deletion process"""
+    try:
+        process_manager = get_process_manager()
+        state = process_manager.stop_process(f"delete-report-{report_id}")
+        
+        if not state:
+            return {
+                "status": "FAILED",
+                "error": f"No active delete process found for report {report_id}"
+            }
+        
+        return {
+            "status": "SUCCESS",
+            "message": f"Stopped report deletion for report {report_id}",
+            "stopped": state.stopped
+        }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e)}
