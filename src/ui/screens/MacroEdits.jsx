@@ -2,10 +2,10 @@ import React, { useState, useEffect } from "react";
 import {
     Upload, CheckCircle, RefreshCw,
     Database, Search, Clock, AlertCircle,
-    Pause, Play, FileText
+    Pause, Play, FileText, X
 } from "lucide-react";
 
-// Updated API functions for Electron with proper pause/resume
+// Updated API functions with pause/resume for check operations
 const submitMacro = async (reportId, tabsNum) => {
     return window.electronAPI ? await window.electronAPI.macroFill(reportId, tabsNum) : {
         status: "SUCCESS",
@@ -14,31 +14,58 @@ const submitMacro = async (reportId, tabsNum) => {
 };
 
 const checkMacroStatus = async (reportId, tabsNum) => {
-    return await window.electronAPI.fullCheck(reportId, tabsNum)
+    return await window.electronAPI.fullCheck(reportId, tabsNum);
 };
 
 const halfCheckMacroStatus = async (reportId, tabsNum) => {
-    return await window.electronAPI.halfCheck(reportId, tabsNum)
+    return await window.electronAPI.halfCheck(reportId, tabsNum);
 };
 
-// Updated pause/resume functions to use Electron API
-const pauseProcessing = async (reportId) => {
+// Pause/Resume/Stop functions for full check
+const pauseFullCheck = async (reportId) => {
     if (window.electronAPI) {
-        return await window.electronAPI.pauseMacroFill(reportId);
+        return await window.electronAPI.pauseFullCheck(reportId);
     }
-    console.log(`Dummy pause for report: ${reportId}`);
-    return { status: "SUCCESS", result: { message: "Processing paused (dummy function)" } };
+    return { status: "SUCCESS", result: { message: "Full check paused" } };
 };
 
-const resumeProcessing = async (reportId) => {
+const resumeFullCheck = async (reportId) => {
     if (window.electronAPI) {
-        return await window.electronAPI.resumeMacroFill(reportId);
+        return await window.electronAPI.resumeFullCheck(reportId);
     }
-    console.log(`Dummy resume for report: ${reportId}`);
-    return { status: "SUCCESS", result: { message: "Processing resumed (dummy function)" } };
+    return { status: "SUCCESS", result: { message: "Full check resumed" } };
 };
 
-// Enhanced progress context with pause/resume support
+const stopFullCheck = async (reportId) => {
+    if (window.electronAPI) {
+        return await window.electronAPI.stopFullCheck(reportId);
+    }
+    return { status: "SUCCESS", result: { message: "Full check stopped" } };
+};
+
+// Pause/Resume/Stop functions for half check
+const pauseHalfCheck = async (reportId) => {
+    if (window.electronAPI) {
+        return await window.electronAPI.pauseHalfCheck(reportId);
+    }
+    return { status: "SUCCESS", result: { message: "Half check paused" } };
+};
+
+const resumeHalfCheck = async (reportId) => {
+    if (window.electronAPI) {
+        return await window.electronAPI.resumeHalfCheck(reportId);
+    }
+    return { status: "SUCCESS", result: { message: "Half check resumed" } };
+};
+
+const stopHalfCheck = async (reportId) => {
+    if (window.electronAPI) {
+        return await window.electronAPI.stopHalfCheck(reportId);
+    }
+    return { status: "SUCCESS", result: { message: "Half check stopped" } };
+};
+
+// Enhanced progress context with pause/resume support (for macro fill)
 const useProgress = () => {
     const [progressStates, setProgressStates] = useState({});
 
@@ -125,7 +152,7 @@ const useProgress = () => {
     return { progressStates, dispatch };
 };
 
-// Enhanced Progress Display Component with better pause/resume UI
+// Progress Display Component for macro fill
 const ProgressDisplay = ({ progress, message, paused, data = {} }) => {
     const {
         current = 0,
@@ -207,53 +234,119 @@ const ProgressDisplay = ({ progress, message, paused, data = {} }) => {
                             <div className="flex justify-between">
                                 <span className="text-gray-600">Status:</span>
                                 <span className={`font-semibold ${paused ? 'text-yellow-600' :
-                                        progress === 100 ? 'text-green-600' : 'text-blue-600'
+                                    progress === 100 ? 'text-green-600' : 'text-blue-600'
                                     }`}>
                                     {paused ? 'Paused' : progress === 100 ? 'Complete' : 'Processing'}
                                 </span>
                             </div>
                         </div>
                     </div>
-
-                    {/* Progress stats bar */}
-                    {total > 0 && (
-                        <div className="mt-4 pt-4 border-t border-gray-200">
-                            <div className="flex h-4 rounded-full overflow-hidden">
-                                {successCount > 0 && (
-                                    <div
-                                        className="bg-green-500 h-full"
-                                        style={{ width: `${(successCount / total) * 100}%` }}
-                                        title={`Successful: ${successCount}`}
-                                    ></div>
-                                )}
-                                {failedRecords > 0 && (
-                                    <div
-                                        className="bg-red-500 h-full"
-                                        style={{ width: `${(failedRecords / total) * 100}%` }}
-                                        title={`Failed: ${failedRecords}`}
-                                    ></div>
-                                )}
-                                <div
-                                    className={`h-full ${paused ? 'bg-yellow-300' : 'bg-gray-300'
-                                        }`}
-                                    style={{ width: `${((total - current) / total) * 100}%` }}
-                                    title={`Remaining: ${total - current}`}
-                                ></div>
-                            </div>
-                            <div className="flex justify-between text-xs text-gray-600 mt-1">
-                                <span>Success: {successCount}</span>
-                                <span>Failed: {failedRecords}</span>
-                                <span>Remaining: {total - current}</span>
-                            </div>
-                        </div>
-                    )}
                 </div>
             </div>
         </div>
     );
 };
 
-// Incomplete IDs Table Component (unchanged)
+// Check Status Display Component for full/half checks
+const CheckStatusDisplay = ({
+    type,
+    status,
+    message,
+    onPause,
+    onResume,
+    onStop,
+    isPausing = false,
+    isResuming = false,
+    isStopping = false,
+    paused = false
+}) => {
+    const isFullCheck = type === 'full';
+    const bgColor = isFullCheck ? 'bg-gray-100' : 'bg-yellow-100';
+    const borderColor = isFullCheck ? 'border-gray-300' : 'border-yellow-300';
+    const textColor = isFullCheck ? 'text-gray-800' : 'text-yellow-800';
+    const iconColor = isFullCheck ? 'text-gray-600' : 'text-yellow-600';
+    const iconBgColor = isFullCheck ? 'bg-gray-200' : 'bg-yellow-200';
+
+    return (
+        <div className={`${bgColor} border ${borderColor} rounded p-6`}>
+            <div className="text-center mb-6">
+                <div className={`w-16 h-16 ${iconBgColor} rounded-full flex items-center justify-center mx-auto mb-4`}>
+                    {paused ? (
+                        <Pause className="w-8 h-8 text-yellow-600" />
+                    ) : (
+                        <RefreshCw className={`w-8 h-8 ${iconColor} animate-spin`} />
+                    )}
+                </div>
+                <h3 className={`text-xl font-semibold ${textColor} mb-2`}>
+                    {paused ? `${isFullCheck ? 'Full' : 'Half'} Check Paused` : `${isFullCheck ? 'Full' : 'Half'} Check In Progress`}
+                </h3>
+                <p className={isFullCheck ? 'text-gray-600' : 'text-yellow-600'}>{message}</p>
+            </div>
+
+            {/* Pause/Resume/Stop Controls */}
+            <div className="flex justify-center gap-3 mt-6">
+                {paused ? (
+                    <button
+                        onClick={onResume}
+                        disabled={isResuming}
+                        className="px-6 py-3 bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white rounded font-semibold flex items-center gap-2"
+                    >
+                        {isResuming ? (
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                        ) : (
+                            <Play className="w-4 h-4" />
+                        )}
+                        {isResuming ? "Resuming..." : "Resume Check"}
+                    </button>
+                ) : (
+                    <button
+                        onClick={onPause}
+                        disabled={isPausing}
+                        className="px-6 py-3 bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-400 text-white rounded font-semibold flex items-center gap-2"
+                    >
+                        {isPausing ? (
+                            <RefreshCw className="w-4 h-4 animate-spin" />
+                        ) : (
+                            <Pause className="w-4 h-4" />
+                        )}
+                        {isPausing ? "Pausing..." : "Pause Check"}
+                    </button>
+                )}
+
+                <button
+                    onClick={onStop}
+                    disabled={isStopping}
+                    className="px-6 py-3 bg-red-600 hover:bg-red-700 disabled:bg-gray-400 text-white rounded font-semibold flex items-center gap-2"
+                >
+                    {isStopping ? (
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                    ) : (
+                        <X className="w-4 h-4" />
+                    )}
+                    {isStopping ? "Stopping..." : "Stop Check"}
+                </button>
+            </div>
+
+            {/* Status Message */}
+            {paused && (
+                <div className="bg-yellow-100 border border-yellow-300 rounded p-4 mt-4">
+                    <div className="flex items-center gap-3">
+                        <Pause className="w-5 h-5 text-yellow-600" />
+                        <div>
+                            <p className="font-semibold text-yellow-800">Check Paused</p>
+                            <p className="text-sm text-yellow-700">
+                                Click "Resume Check" to continue checking macros.
+                                Click "Stop Check" to cancel the operation.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
+
+// Incomplete IDs Table Component
 const IncompleteIDsTable = ({ incompleteIds, title }) => {
     if (!incompleteIds || incompleteIds.length === 0) {
         return (
@@ -303,6 +396,21 @@ const IncompleteIDsTable = ({ incompleteIds, title }) => {
     );
 };
 
+// Pause/Resume functions for macro fill
+const pauseProcessing = async (reportId) => {
+    if (window.electronAPI) {
+        return await window.electronAPI.pauseMacroFill(reportId);
+    }
+    return { status: "SUCCESS", result: { message: "Processing paused" } };
+};
+
+const resumeProcessing = async (reportId) => {
+    if (window.electronAPI) {
+        return await window.electronAPI.resumeMacroFill(reportId);
+    }
+    return { status: "SUCCESS", result: { message: "Processing resumed" } };
+};
+
 const SubmitMacro = () => {
     const { progressStates, dispatch } = useProgress();
     const isLoggedIn = true; // Always logged in for Electron app
@@ -323,9 +431,17 @@ const SubmitMacro = () => {
     const [checkResult, setCheckResult] = useState(null);
     const [halfCheckResult, setHalfCheckResult] = useState(null);
 
-    // Pause/resume state
+    // Pause/resume state for checks
     const [isPausing, setIsPausing] = useState(false);
     const [isResuming, setIsResuming] = useState(false);
+    const [isStopping, setIsStopping] = useState(false);
+    const [checkPaused, setCheckPaused] = useState(false);
+    const [halfCheckPaused, setHalfCheckPaused] = useState(false);
+    const [activeCheckType, setActiveCheckType] = useState(null); // 'full' or 'half'
+
+    // Pause/resume state for macro fill
+    const [isPausingMacro, setIsPausingMacro] = useState(false);
+    const [isResumingMacro, setIsResumingMacro] = useState(false);
 
     // Get progress state for current report
     const currentProgress = reportId ? progressStates[reportId] : null;
@@ -444,7 +560,7 @@ const SubmitMacro = () => {
         }
     };
 
-    // Handle macro status check
+    // Handle macro status check with pause/resume support
     const handleCheckMacro = async () => {
         if (!reportId.trim()) {
             setError("Please enter a report ID");
@@ -453,6 +569,8 @@ const SubmitMacro = () => {
 
         setError("");
         setIsSubmitting(true);
+        setActiveCheckType('full');
+        setCheckPaused(false);
         setCurrentStep('checking');
 
         try {
@@ -461,25 +579,29 @@ const SubmitMacro = () => {
             const result = await checkMacroStatus(reportId, tabsNum);
             console.log("Macro check result:", result);
 
+            // Check if the operation was successful
             if (result.status === "SUCCESS") {
                 setCheckResult(result);
                 setCurrentStep('check-result');
+                setActiveCheckType(null);
             } else {
                 const errorMessage = result.result?.message || result.error || 'Failed to check macro status';
                 setError(errorMessage);
                 setCurrentStep('error');
+                setActiveCheckType(null);
             }
 
         } catch (err) {
             console.error("Error checking macro status:", err);
             setError(err.message || 'An unexpected error occurred while checking macro status');
             setCurrentStep('error');
+            setActiveCheckType(null);
         } finally {
             setIsSubmitting(false);
         }
     };
 
-    // Handle half check macro status
+    // Handle half check macro status with pause/resume support
     const handleHalfCheckMacro = async () => {
         if (!reportId.trim()) {
             setError("Please enter a report ID");
@@ -488,6 +610,8 @@ const SubmitMacro = () => {
 
         setError("");
         setIsSubmitting(true);
+        setActiveCheckType('half');
+        setHalfCheckPaused(false);
         setCurrentStep('half-checking');
 
         try {
@@ -499,26 +623,131 @@ const SubmitMacro = () => {
             if (result.status === "SUCCESS") {
                 setHalfCheckResult(result);
                 setCurrentStep('half-check-result');
+                setActiveCheckType(null);
             } else {
                 const errorMessage = result.result?.message || result.error || 'Failed to check macro status';
                 setError(errorMessage);
                 setCurrentStep('error');
+                setActiveCheckType(null);
             }
 
         } catch (err) {
             console.error("Error half checking macro status:", err);
             setError(err.message || 'An unexpected error occurred while checking macro status');
             setCurrentStep('error');
+            setActiveCheckType(null);
         } finally {
             setIsSubmitting(false);
         }
     };
 
-    // Enhanced pause processing function
+    // Handle pause for active check
+    const handlePauseCheck = async () => {
+        if (!reportId || !activeCheckType) return;
+
+        setIsPausing(true);
+        setError("");
+
+        try {
+            console.log(`Pausing ${activeCheckType} check for report: ${reportId}`);
+
+            const result = activeCheckType === 'full'
+                ? await pauseFullCheck(reportId)
+                : await pauseHalfCheck(reportId);
+
+            console.log("Pause result:", result);
+
+            if (result.status === "SUCCESS") {
+                if (activeCheckType === 'full') {
+                    setCheckPaused(true);
+                } else {
+                    setHalfCheckPaused(true);
+                }
+            } else {
+                setError(result.result?.message || result.error || `Failed to pause ${activeCheckType} check`);
+            }
+        } catch (err) {
+            console.error("Error pausing check:", err);
+            setError(err.message || `Failed to pause ${activeCheckType} check`);
+        } finally {
+            setIsPausing(false);
+        }
+    };
+
+    // Handle resume for active check
+    const handleResumeCheck = async () => {
+        if (!reportId || !activeCheckType) return;
+
+        setIsResuming(true);
+        setError("");
+
+        try {
+            console.log(`Resuming ${activeCheckType} check for report: ${reportId}`);
+
+            const result = activeCheckType === 'full'
+                ? await resumeFullCheck(reportId)
+                : await resumeHalfCheck(reportId);
+
+            console.log("Resume result:", result);
+
+            if (result.status === "SUCCESS") {
+                if (activeCheckType === 'full') {
+                    setCheckPaused(false);
+                } else {
+                    setHalfCheckPaused(false);
+                }
+            } else {
+                setError(result.result?.message || result.error || `Failed to resume ${activeCheckType} check`);
+            }
+        } catch (err) {
+            console.error("Error resuming check:", err);
+            setError(err.message || `Failed to resume ${activeCheckType} check`);
+        } finally {
+            setIsResuming(false);
+        }
+    };
+
+    // Handle stop for active check
+    const handleStopCheck = async () => {
+        if (!reportId || !activeCheckType) return;
+
+        setIsStopping(true);
+        setError("");
+
+        try {
+            console.log(`Stopping ${activeCheckType} check for report: ${reportId}`);
+
+            const result = activeCheckType === 'full'
+                ? await stopFullCheck(reportId)
+                : await stopHalfCheck(reportId);
+
+            console.log("Stop result:", result);
+
+            if (result.status === "SUCCESS") {
+                // Reset to input step
+                setActiveCheckType(null);
+                setCheckPaused(false);
+                setHalfCheckPaused(false);
+                setCurrentStep('report-id-input');
+
+                // Show success message for stop
+                setError(`${activeCheckType === 'full' ? 'Full' : 'Half'} check stopped successfully`);
+            } else {
+                setError(result.result?.message || result.error || `Failed to stop ${activeCheckType} check`);
+            }
+        } catch (err) {
+            console.error("Error stopping check:", err);
+            setError(err.message || `Failed to stop ${activeCheckType} check`);
+        } finally {
+            setIsStopping(false);
+        }
+    };
+
+    // Enhanced pause processing function for macro fill
     const handlePauseProcessing = async () => {
         if (!reportId) return;
 
-        setIsPausing(true);
+        setIsPausingMacro(true);
         setError("");
 
         try {
@@ -551,15 +780,15 @@ const SubmitMacro = () => {
                 payload: { reportId }
             });
         } finally {
-            setIsPausing(false);
+            setIsPausingMacro(false);
         }
     };
 
-    // Enhanced resume processing function
+    // Enhanced resume processing function for macro fill
     const handleResumeProcessing = async () => {
         if (!reportId) return;
 
-        setIsResuming(true);
+        setIsResumingMacro(true);
         setError("");
 
         try {
@@ -592,7 +821,7 @@ const SubmitMacro = () => {
                 payload: { reportId }
             });
         } finally {
-            setIsResuming(false);
+            setIsResumingMacro(false);
         }
     };
 
@@ -608,6 +837,12 @@ const SubmitMacro = () => {
         setHalfCheckResult(null);
         setIsPausing(false);
         setIsResuming(false);
+        setIsStopping(false);
+        setIsPausingMacro(false);
+        setIsResumingMacro(false);
+        setCheckPaused(false);
+        setHalfCheckPaused(false);
+        setActiveCheckType(null);
 
         // Clear progress state if exists
         if (reportId && progressStates[reportId]) {
@@ -616,6 +851,20 @@ const SubmitMacro = () => {
                 payload: { reportId }
             });
         }
+    };
+
+    // Update the check status display messages based on paused state
+    const getCheckStatusMessage = () => {
+        if (activeCheckType === 'full') {
+            return checkPaused
+                ? `Full check paused for report ${reportId}. Click Resume to continue.`
+                : `Checking all macros for report ${reportId}...`;
+        } else if (activeCheckType === 'half') {
+            return halfCheckPaused
+                ? `Half check paused for report ${reportId}. Click Resume to continue.`
+                : `Checking only incomplete macros for report ${reportId}...`;
+        }
+        return "";
     };
 
     return (
@@ -733,8 +982,8 @@ const SubmitMacro = () => {
                                         <div>
                                             <p className="font-medium text-gray-800">What this does:</p>
                                             <p className="text-sm text-gray-600">
-                                                <strong>Full Check:</strong> Checks all macros in the report<br />
-                                                <strong>Half Check:</strong> Only checks previously incomplete macros (faster)<br />
+                                                <strong>Full Check:</strong> Checks all macros in the report (can be paused/resumed)<br />
+                                                <strong>Half Check:</strong> Only checks previously incomplete macros (faster, can be paused/resumed)<br />
                                                 <strong>Submit Macro:</strong> Submits macros for the report with pause/resume support
                                             </p>
                                         </div>
@@ -744,7 +993,7 @@ const SubmitMacro = () => {
                         </div>
                     )}
 
-                    {/* Step 2: Submission In Progress */}
+                    {/* Step 2: Submission In Progress (Macro Fill) */}
                     {currentStep === 'submission-in-progress' && currentProgress && (
                         <div className="space-y-6">
                             <ProgressDisplay
@@ -754,38 +1003,38 @@ const SubmitMacro = () => {
                                 data={currentProgress.data || {}}
                             />
 
-                            {/* Enhanced Pause/Resume Controls */}
+                            {/* Enhanced Pause/Resume Controls for Macro Fill */}
                             <div className="flex justify-center gap-3 mt-6">
                                 {currentProgress.paused ? (
                                     <button
                                         onClick={handleResumeProcessing}
-                                        disabled={isResuming || currentProgress.stopped || currentProgress.status === 'COMPLETE'}
+                                        disabled={isResumingMacro || currentProgress.stopped || currentProgress.status === 'COMPLETE'}
                                         className="px-6 py-3 bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white rounded font-semibold flex items-center gap-2"
                                     >
-                                        {isResuming ? (
+                                        {isResumingMacro ? (
                                             <RefreshCw className="w-4 h-4 animate-spin" />
                                         ) : (
                                             <Play className="w-4 h-4" />
                                         )}
-                                        {isResuming ? "Resuming..." : "Resume Processing"}
+                                        {isResumingMacro ? "Resuming..." : "Resume Processing"}
                                     </button>
                                 ) : (
                                     <button
                                         onClick={handlePauseProcessing}
-                                        disabled={isPausing || currentProgress.stopped || currentProgress.status === 'COMPLETE'}
+                                        disabled={isPausingMacro || currentProgress.stopped || currentProgress.status === 'COMPLETE'}
                                         className="px-6 py-3 bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-400 text-white rounded font-semibold flex items-center gap-2"
                                     >
-                                        {isPausing ? (
+                                        {isPausingMacro ? (
                                             <RefreshCw className="w-4 h-4 animate-spin" />
                                         ) : (
                                             <Pause className="w-4 h-4" />
                                         )}
-                                        {isPausing ? "Pausing..." : "Pause Processing"}
+                                        {isPausingMacro ? "Pausing..." : "Pause Processing"}
                                     </button>
                                 )}
                             </div>
 
-                            {/* Enhanced Pause Status Message */}
+                            {/* Enhanced Pause Status Message for Macro Fill */}
                             {currentProgress.paused && (
                                 <div className="bg-yellow-100 border border-yellow-300 rounded p-4">
                                     <div className="flex items-center gap-3">
@@ -801,7 +1050,7 @@ const SubmitMacro = () => {
                                 </div>
                             )}
 
-                            {/* Processing Status Message */}
+                            {/* Processing Status Message for Macro Fill */}
                             {!currentProgress.paused && currentProgress.status === 'PROCESSING' && (
                                 <div className="bg-blue-100 border border-blue-300 rounded p-4">
                                     <div className="flex items-center gap-3">
@@ -818,7 +1067,43 @@ const SubmitMacro = () => {
                         </div>
                     )}
 
-                    {/* Step 3: Success */}
+                    {/* Step 3: Full Check In Progress */}
+                    {currentStep === 'checking' && activeCheckType === 'full' && (
+                        <div className="space-y-6">
+                            <CheckStatusDisplay
+                                type="full"
+                                status="PROCESSING"
+                                message={getCheckStatusMessage()}
+                                onPause={handlePauseCheck}
+                                onResume={handleResumeCheck}
+                                onStop={handleStopCheck}
+                                isPausing={isPausing}
+                                isResuming={isResuming}
+                                isStopping={isStopping}
+                                paused={checkPaused}
+                            />
+                        </div>
+                    )}
+
+                    {/* Step 4: Half Check In Progress */}
+                    {currentStep === 'half-checking' && activeCheckType === 'half' && (
+                        <div className="space-y-6">
+                            <CheckStatusDisplay
+                                type="half"
+                                status="PROCESSING"
+                                message={getCheckStatusMessage()}
+                                onPause={handlePauseCheck}
+                                onResume={handleResumeCheck}
+                                onStop={handleStopCheck}
+                                isPausing={isPausing}
+                                isResuming={isResuming}
+                                isStopping={isStopping}
+                                paused={halfCheckPaused}
+                            />
+                        </div>
+                    )}
+
+                    {/* Step 5: Success (Macro Fill Complete) */}
                     {currentStep === 'success' && (
                         <div className="space-y-6">
                             <div className="bg-green-100 border border-green-300 rounded p-6">
@@ -832,7 +1117,7 @@ const SubmitMacro = () => {
                                     </p>
                                 </div>
 
-                                {/* Submission Details - Use the final result data instead of progress data */}
+                                {/* Submission Details */}
                                 {submissionResult?.result && (
                                     <div className="bg-white border border-green-300 rounded p-4 mb-4">
                                         <h4 className="font-semibold text-green-800 mb-2">Submission Details:</h4>
@@ -917,38 +1202,7 @@ const SubmitMacro = () => {
                         </div>
                     )}
 
-                    {/* Other steps remain unchanged */}
-                    {/* Checking Status */}
-                    {currentStep === 'checking' && (
-                        <div className="space-y-6">
-                            <div className="bg-gray-100 border border-gray-300 rounded p-8 text-center">
-                                <div className="w-16 h-16 bg-gray-200 rounded-full flex items-center justify-center mx-auto mb-4">
-                                    <RefreshCw className="w-8 h-8 text-gray-600 animate-spin" />
-                                </div>
-                                <h3 className="text-xl font-semibold text-gray-800 mb-2">Full Check In Progress</h3>
-                                <p className="text-gray-600 mb-4">
-                                    Checking all macros for report <strong>{reportId}</strong>
-                                </p>
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Half Checking Status */}
-                    {currentStep === 'half-checking' && (
-                        <div className="space-y-6">
-                            <div className="bg-yellow-100 border border-yellow-300 rounded p-8 text-center">
-                                <div className="w-16 h-16 bg-yellow-200 rounded-full flex items-center justify-center mx-auto mb-4">
-                                    <RefreshCw className="w-8 h-8 text-yellow-600 animate-spin" />
-                                </div>
-                                <h3 className="text-xl font-semibold text-yellow-800 mb-2">Half Check In Progress</h3>
-                                <p className="text-yellow-600 mb-4">
-                                    Checking only incomplete macros for report <strong>{reportId}</strong>
-                                </p>
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Check Result */}
+                    {/* Step 6: Full Check Result */}
                     {currentStep === 'check-result' && (
                         <div className="space-y-6">
                             <div className="bg-gray-100 border border-gray-300 rounded p-6">
@@ -1021,14 +1275,14 @@ const SubmitMacro = () => {
                                         onClick={handleCheckMacro}
                                         className="px-6 py-3 bg-gray-600 hover:bg-gray-700 text-white rounded font-semibold"
                                     >
-                                        Run Full Check
+                                        Run Full Check Again
                                     </button>
                                 </div>
                             </div>
                         </div>
                     )}
 
-                    {/* Half Check Result */}
+                    {/* Step 7: Half Check Result */}
                     {currentStep === 'half-check-result' && (
                         <div className="space-y-6">
                             <div className="bg-yellow-50 border border-yellow-300 rounded p-6">
@@ -1116,9 +1370,7 @@ const SubmitMacro = () => {
                                     <AlertCircle className="w-8 h-8 text-red-600" />
                                 </div>
                                 <h3 className="text-xl font-semibold text-red-800 mb-2">Operation Failed</h3>
-                                <p className="text-red-600 mb-4">
-                                    {currentProgress?.message || error}
-                                </p>
+                                <p className="text-red-600 mb-4">{error}</p>
 
                                 <div className="flex flex-col sm:flex-row gap-3 justify-center">
                                     <button

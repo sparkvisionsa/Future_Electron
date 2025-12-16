@@ -10,10 +10,15 @@ from scripts.submission.ElRajhiFiller import (
 )
 from .formSteps import macro_form_config
 from .macroFiller import fill_macro_form
+from .validateReport import check_report_existence
 
 MONGO_URI = "mongodb+srv://Aasim:userAasim123@electron.cwbi8id.mongodb.net"
 client = AsyncIOMotorClient(MONGO_URI)
 db = client["test"]
+
+VALID_STATUSES = {"INCOMPLETE", "COMPLETE", "SENT", "CONFIRMED"}
+SENT_BUTTON_MARKER = 'id="reject"'
+CONFIRMED_BUTTON_TEXT = "شهادة التسجيل"
 
 
 def chunk_items(items, n):
@@ -28,23 +33,33 @@ def chunk_items(items, n):
         start += size
     return chunks
 
+async def _mark_submit_state(report_doc, submit_state, report_status=None, clear_report_id=False):
+    update = {
+        "submit_state": submit_state,
+        "last_checked_at": datetime.now(timezone.utc),
+    }
 
-async def _mark_submit_state(report_doc, submit_state):
+    if report_status:
+        update["report_status"] = report_status
+
+    if clear_report_id:
+        update["report_id"] = None
+
     await db.urgentreports.update_one(
         {"_id": report_doc["_id"]},
-        {
-            "$set": {
-                "submit_state": submit_state,
-                "last_checked_at": datetime.now(timezone.utc),
-            }
-        },
+        {"$set": update},
     )
 
+
+
+
+
+    
 
 async def _check_single_report(page, report_doc):
     report_id = report_doc.get("report_id")
     if not report_id:
-        await _mark_submit_state(report_doc, 0)
+        await _mark_submit_state(report_doc, 0, "INCOMPLETE")
         return {
             "batchId": report_doc.get("batch_id"),
             "reportId": None,
@@ -60,8 +75,29 @@ async def _check_single_report(page, report_doc):
         await page.get(url)
         await asyncio.sleep(1)
 
+        # -------------------------------
+        # NEW: report existence check
+        # -------------------------------
+        existence = await check_report_existence(page, report_id)
+
+        if not existence.get("exists"):
+            await _mark_submit_state(report_doc, -1, "NOT_FOUND", clear_report_id=True)
+            return {
+                "batchId": report_doc.get("batch_id"),
+                "reportId": report_id,
+                "status": "NOT_FOUND",
+                "reason": "report_not_accessible_or_missing",
+                "client_name": report_doc.get("client_name"),
+                "asset_name": report_doc.get("asset_name"),
+                "checkedAt": datetime.now(timezone.utc).isoformat(),
+            }
+
+        # -------------------------------
+        # Existing logic (UNCHANGED)
+        # -------------------------------
         delete_btn = await wait_for_element(page, "#delete_report", timeout=8)
         submit_state = 1 if delete_btn else 0
+        status_value = "COMPLETE" if submit_state else "INCOMPLETE"
         macro_id = None
 
         if not delete_btn:
@@ -76,19 +112,45 @@ async def _check_single_report(page, report_doc):
             except Exception:
                 macro_id = None
 
-        await _mark_submit_state(report_doc, submit_state)
+        try:
+            html = await page.get_content()
+        except Exception:
+            html = ""
+
+        html_lower = html.lower() if isinstance(html, str) else ""
+        has_sent_marker = SENT_BUTTON_MARKER in html_lower or 'name="reject"' in html_lower
+        has_confirmed_marker = (
+            isinstance(html, str) and CONFIRMED_BUTTON_TEXT in html
+        )
+
+        if has_sent_marker:
+            status_value = "SENT"
+            submit_state = 1
+
+        if has_confirmed_marker:
+            status_value = "CONFIRMED"
+            submit_state = 1
+
+        await _mark_submit_state(report_doc, submit_state, status_value)
 
         return {
             "batchId": report_doc.get("batch_id"),
             "reportId": report_id,
-            "status": "COMPLETE" if submit_state else "INCOMPLETE",
+            "status": status_value,
+            "reportStatus": status_value,
             "client_name": report_doc.get("client_name"),
             "asset_name": report_doc.get("asset_name"),
             "macroId": macro_id,
             "checkedAt": datetime.now(timezone.utc).isoformat(),
+            "markers": {
+                "hasDeleteButton": bool(delete_btn),
+                "hasRejectButton": has_sent_marker,
+                "hasCertificateButton": has_confirmed_marker,
+            },
         }
+
     except Exception as e:
-        await _mark_submit_state(report_doc, 0)
+        await _mark_submit_state(report_doc, 0, "INCOMPLETE")
         return {
             "batchId": report_doc.get("batch_id"),
             "reportId": report_id,
@@ -97,6 +159,7 @@ async def _check_single_report(page, report_doc):
             "client_name": report_doc.get("client_name"),
             "asset_name": report_doc.get("asset_name"),
         }
+
 
 
 async def check_elrajhi_batches(browser, batch_id=None, tabs_num=3):
@@ -139,10 +202,27 @@ async def check_elrajhi_batches(browser, batch_id=None, tabs_num=3):
         grouped[key]["reports"].append(item)
 
     for group in grouped.values():
-        complete = sum(1 for r in group["reports"] if r.get("status") == "COMPLETE")
+        sent = 0
+        confirmed = 0
+        complete = 0
+
+        for r in group["reports"]:
+            status = (r.get("status") or "").upper()
+            if status == "SENT":
+                sent += 1
+            if status == "CONFIRMED":
+                confirmed += 1
+            if status in ("COMPLETE", "SENT", "CONFIRMED"):
+                complete += 1
+
         group["complete"] = complete
+        group["sent"] = sent
+        group["confirmed"] = confirmed
         group["total"] = len(group["reports"])
         group["incomplete"] = group["total"] - complete
+
+    for page in pages:
+        await page.close()
 
     return {"status": "SUCCESS", "batches": list(grouped.values())}
 
@@ -179,18 +259,22 @@ async def reupload_elrajhi_report(browser, report_id):
 
         finalize_result = await finalize_report_submission(page, report_id)
         submit_state = 1 if finalize_result.get("status") == "SUCCESS" else 0
+        status_value = "COMPLETE" if submit_state else "INCOMPLETE"
 
-        await _mark_submit_state(report_doc, submit_state)
+        await _mark_submit_state(report_doc, submit_state, status_value)
+
+
 
         return {
             "status": "SUCCESS" if submit_state else "FAILED",
             "reportId": report_id,
             "macroId": macro_id,
             "submitState": submit_state,
+            "reportStatus": status_value,
             "macroResult": macro_result,
             "finalize": finalize_result,
         }
     except Exception as e:
         tb = traceback.format_exc()
-        await _mark_submit_state(report_doc, 0)
+        await _mark_submit_state(report_doc, 0, "INCOMPLETE")
         return {"status": "FAILED", "error": str(e), "traceback": tb}

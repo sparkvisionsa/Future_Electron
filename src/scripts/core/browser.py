@@ -33,9 +33,9 @@ async def get_browser(force_new=False):
                 f"--user-agent={user_agent}",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
+                "--no_sandbox=True",
                 "--disable-popup-blocking",
                 "--disable-features=VizDisplayCompositor",
-                "--disable-blink-features=AutomationControlled",
                 "--lang=en-US",
                 "--no-first-run",
                 "--no-default-browser-check"

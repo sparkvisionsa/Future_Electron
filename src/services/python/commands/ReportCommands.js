@@ -27,6 +27,28 @@ class ReportCommands {
         });
     }
 
+    // NEW: Pause/Resume/Stop for create-macros
+    async pauseCreateMacros(reportId) {
+        return this._sendCommand({
+            action: 'pause-create-macros',
+            reportId
+        });
+    }
+
+    async resumeCreateMacros(reportId) {
+        return this._sendCommand({
+            action: 'resume-create-macros',
+            reportId
+        });
+    }
+
+    async stopCreateMacros(reportId) {
+        return this._sendCommand({
+            action: 'stop-create-macros',
+            reportId
+        });
+    }
+
     async ElRajhiUploadReport(batchId, tabsNum, pdfOnly, finalizeSubmission = true) {
         return this._sendCommand({
             action: 'elrajhi-filler',
@@ -34,6 +56,27 @@ class ReportCommands {
             tabsNum,
             pdfOnly,
             finalizeSubmission
+        });
+    }
+
+    async pauseElRajhiBatch(batchId) {
+        return this._sendCommand({
+            action: 'pause-elrajhi-batch',
+            batchId
+        });
+    }
+
+    async resumeElRajhiBatch(batchId) {
+        return this._sendCommand({
+            action: 'resume-elrajhi-batch',
+            batchId
+        });
+    }
+
+    async stopElRajhiBatch(batchId) {
+        return this._sendCommand({
+            action: 'stop-elrajhi-batch',
+            batchId
         });
     }
 
@@ -60,6 +103,27 @@ class ReportCommands {
         });
     }
 
+    async pauseGrabMacroIds(reportId) {
+        return this._sendCommand({
+            action: 'pause-grab-macro-ids',
+            reportId
+        });
+    }
+
+    async resumeGrabMacroIds(reportId) {
+        return this._sendCommand({
+            action: 'resume-grab-macro-ids',
+            reportId
+        });
+    }
+
+    async stopGrabMacroIds(reportId) {
+        return this._sendCommand({
+            action: 'stop-grab-macro-ids',
+            reportId
+        });
+    }
+
     async retryMacroIds(reportId, tabsNum) {
         return this._sendCommand({
             action: 'retry-macro-ids',
@@ -68,10 +132,47 @@ class ReportCommands {
         });
     }
 
+    async pauseRetryMacroIds(reportId) {
+        return this._sendCommand({
+            action: 'pause-retry-macro-ids',
+            reportId
+        });
+    }
+
+    async resumeRetryMacroIds(reportId) {
+        return this._sendCommand({
+            action: 'resume-retry-macro-ids',
+            reportId
+        });
+    }
+
+    async stopRetryMacroIds(reportId) {
+        return this._sendCommand({
+            action: 'stop-retry-macro-ids',
+            reportId
+        });
+    }
+
     async macroFill(reportId, tabsNum) {
         return this._sendCommand({
             action: 'macro-edit',
             reportId,
+            tabsNum
+        });
+    }
+
+    async retryAlRahjiReport(batchId, tabsNum) {
+        return this._sendCommand({
+            action: 'retry-ElRajhi-report',
+            batchId,
+            tabsNum
+        });
+    }
+
+    async retryElRajhiReportByReportIds(reportIds, tabsNum) {
+        return this._sendCommand({
+            action: 'elrajhi-retry-by-report-ids',
+            reportIds,
             tabsNum
         });
     }
@@ -113,11 +214,53 @@ class ReportCommands {
         });
     }
 
+    async pauseFullCheck(reportId) {
+        return this._sendCommand({
+            action: 'pause-full-check',
+            reportId
+        });
+    }
+
+    async resumeFullCheck(reportId) {
+        return this._sendCommand({
+            action: 'resume-full-check',
+            reportId
+        });
+    }
+
+    async stopFullCheck(reportId) {
+        return this._sendCommand({
+            action: 'stop-full-check',
+            reportId
+        });
+    }
+
     async halfCheck(reportId, tabsNum) {
         return this._sendCommand({
             action: 'half-check',
             reportId,
             tabsNum
+        });
+    }
+
+    async pauseHalfCheck(reportId) {
+        return this._sendCommand({
+            action: 'pause-half-check',
+            reportId
+        });
+    }
+
+    async resumeHalfCheck(reportId) {
+        return this._sendCommand({
+            action: 'resume-half-check',
+            reportId
+        });
+    }
+
+    async stopHalfCheck(reportId) {
+        return this._sendCommand({
+            action: 'stop-half-check',
+            reportId
         });
     }
 
@@ -129,11 +272,61 @@ class ReportCommands {
         });
     }
 
+    async deleteMultipleReports(reportIds, maxRounds) {
+        return this._sendCommand({
+            action: 'delete-multiple-reports',
+            reportIds,
+            maxRounds
+        });
+    }
+
+    async pauseDeleteReport(reportId) {
+        return this._sendCommand({
+            action: 'pause-delete-report',
+            reportId
+        });
+    }
+
+    async resumeDeleteReport(reportId) {
+        return this._sendCommand({
+            action: 'resume-delete-report',
+            reportId
+        });
+    }
+
+    async stopDeleteReport(reportId) {
+        return this._sendCommand({
+            action: 'stop-delete-report',
+            reportId
+        });
+    }
+
     async deleteIncompleteAssets(reportId, maxRounds) {
         return this._sendCommand({
             action: 'delete-incomplete-assets',
             reportId,
             maxRounds
+        });
+    }
+
+    async pauseDeleteIncompleteAssets(reportId) {
+        return this._sendCommand({
+            action: 'pause-delete-incomplete-assets',
+            reportId
+        });
+    }
+
+    async resumeDeleteIncompleteAssets(reportId) {
+        return this._sendCommand({
+            action: 'resume-delete-incomplete-assets',
+            reportId
+        });
+    }
+
+    async stopDeleteIncompleteAssets(reportId) {
+        return this._sendCommand({
+            action: 'stop-delete-incomplete-assets',
+            reportId
         });
     }
 

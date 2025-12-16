@@ -6,23 +6,75 @@ from scripts.loginFlow.login import startLogin, submitOtp
 from scripts.loginFlow.register import register_user
 
 from scripts.submission.validateReport import validate_report
-from scripts.submission.createMacros import run_create_assets
-from scripts.submission.grabMacroIds import get_all_macro_ids_parallel, retry_get_missing_macro_ids
+from motor.motor_asyncio import AsyncIOMotorClient
+
+from scripts.submission.createMacros import (
+    run_create_assets,
+    pause_create_macros,
+    resume_create_macros,
+    stop_create_macros
+)
+
+from scripts.submission.grabMacroIds import (
+    get_all_macro_ids_parallel, 
+    pause_grab_macro_ids,
+    resume_grab_macro_ids,
+    stop_grab_macro_ids,
+
+    retry_get_missing_macro_ids,
+    pause_retry_macro_ids,
+    resume_retry_macro_ids, 
+    stop_retry_macro_ids
+)
+
 from scripts.submission.macroFiller import (
     run_macro_edit, 
     pause_macro_edit, 
     resume_macro_edit, 
     stop_macro_edit
 )
-from scripts.submission.ElRajhiFiller import ElRajhiFiller
+
+from scripts.submission.ElRajhiFiller import (
+    ElRajhiFiller,
+    ElrajhiRetry,
+    ElrajhiRetryByReportIds,
+
+    pause_batch,
+    resume_batch,
+    stop_batch,
+)
+
 from scripts.submission.ElRajhiChecker import check_elrajhi_batches, reupload_elrajhi_report
 from scripts.submission.duplicateReport import run_duplicate_report
 from scripts.submission.mutliReportFiller import create_reports_by_batch
 
-from scripts.submission.checkMacroStatus import RunCheckMacroStatus, RunHalfCheckMacroStatus
+from scripts.submission.checkMacroStatus import (
+    RunCheckMacroStatus, 
+    pause_full_check, 
+    resume_full_check, 
+    stop_full_check,
 
-from scripts.delete.reportDelete import delete_report_flow
-from scripts.delete.deleteIncompleteAssets import delete_incomplete_assets_flow
+    RunHalfCheckMacroStatus,
+    pause_half_check, 
+    resume_half_check, 
+    stop_half_check
+)
+
+from scripts.delete.reportDelete import (
+    delete_report_flow,
+    delete_multiple_reports_flow,
+
+    pause_delete_report, 
+    resume_delete_report, 
+    stop_delete_report
+)
+
+from scripts.delete.deleteIncompleteAssets import (
+    delete_incomplete_assets_flow,
+    pause_delete_incomplete_assets, 
+    resume_delete_incomplete_assets, 
+    stop_delete_incomplete_assets
+    )
 from scripts.delete.cancelledReportHandler import handle_cancelled_report
 
 from scripts.loginFlow.getCompanies import get_companies
@@ -32,8 +84,37 @@ if platform.system().lower() == "windows":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 
+# Mongo connection (shared with submission flows)
+MONGO_URI = "mongodb+srv://Aasim:userAasim123@electron.cwbi8id.mongodb.net"
+mongo_client = AsyncIOMotorClient(MONGO_URI)
+mongo_db = mongo_client["test"]
+
 # Track running macro-edit tasks
 running_tasks = {}
+
+async def get_reports_by_batch(batch_id):
+    if not batch_id:
+        return {"status": "FAILED", "error": "Missing batchId"}
+
+    try:
+        cursor = mongo_db.urgentreports.find({"batch_id": batch_id})
+        docs = await cursor.to_list(length=None)
+        if not docs:
+            return {"status": "FAILED", "error": f"No reports found for batchId {batch_id}", "reports": []}
+
+        report_ids = []
+        for doc in docs:
+            rid = doc.get("report_id") or doc.get("reportId") or doc.get("reportid")
+            if rid:
+                report_ids.append(str(rid))
+
+        return {
+            "status": "SUCCESS" if report_ids else "FAILED",
+            "message": f"Fetched {len(report_ids)} report ids for batch {batch_id}",
+            "reports": report_ids
+        }
+    except Exception as e:
+        return {"status": "FAILED", "error": str(e), "reports": []}
 
 async def handle_command(cmd):
     """Handle a single command"""
@@ -107,6 +188,42 @@ async def handle_command(cmd):
 
         print(json.dumps(result), flush=True)
 
+    elif action == "pause-grab-macro-ids":
+        report_id = cmd.get("reportId")
+        result = await pause_grab_macro_ids(report_id)
+        result["commandId"] = cmd.get("commandId")
+        print(json.dumps(result), flush=True)
+  
+    elif action == "resume-grab-macro-ids":
+        report_id = cmd.get("reportId")
+        result = await resume_grab_macro_ids(report_id)
+        result["commandId"] = cmd.get("commandId")
+        print(json.dumps(result), flush=True)
+
+    elif action == "stop-grab-macro-ids":
+        report_id = cmd.get("reportId")
+        result = await stop_grab_macro_ids(report_id)
+        result["commandId"] = cmd.get("commandId")
+        print(json.dumps(result), flush=True)
+
+    elif action == "pause-retry-macro-ids":
+        report_id = cmd.get("reportId")
+        result = await pause_retry_macro_ids(report_id)
+        result["commandId"] = cmd.get("commandId")
+        print(json.dumps(result), flush=True)
+
+    elif action == "resume-retry-macro-ids":
+        report_id = cmd.get("reportId")
+        result = await resume_retry_macro_ids(report_id)
+        result["commandId"] = cmd.get("commandId")
+        print(json.dumps(result), flush=True)
+
+    elif action == "stop-retry-macro-ids":
+        report_id = cmd.get("reportId")
+        result = await stop_retry_macro_ids(report_id)
+        result["commandId"] = cmd.get("commandId")
+        print(json.dumps(result), flush=True)
+
     elif action == "retry-macro-ids":
         browser = await get_browser()
 
@@ -178,6 +295,30 @@ async def handle_command(cmd):
         
         print(json.dumps(result), flush=True)
 
+    elif action == "pause-elrajhi-batch":
+        batch_id = cmd.get("batchId")
+
+        result = await pause_batch(batch_id)
+        result["commandId"] = cmd.get("commandId")
+        
+        print(json.dumps(result), flush=True)
+
+    elif action == "resume-elrajhi-batch":
+        batch_id = cmd.get("batchId")
+
+        result = await resume_batch(batch_id)
+        result["commandId"] = cmd.get("commandId")
+
+        print(json.dumps(result), flush=True)
+
+    elif action == "stop-elrajhi-batch":
+        batch_id = cmd.get("batchId")
+
+        result = await stop_batch(batch_id)
+        result["commandId"] = cmd.get("commandId")
+
+        print(json.dumps(result), flush=True)
+
     elif action == "elrajhi-check-batches":
         browser = await get_browser()
 
@@ -228,6 +369,44 @@ async def handle_command(cmd):
 
         print(json.dumps(result), flush=True)
 
+# Add these elif blocks in your handle_command function:
+
+    elif action == "pause-full-check":
+        report_id = cmd.get("reportId")
+        result = await pause_full_check(report_id)
+        result["commandId"] = cmd.get("commandId")
+        print(json.dumps(result), flush=True)
+
+    elif action == "resume-full-check":
+        report_id = cmd.get("reportId")
+        result = await resume_full_check(report_id)
+        result["commandId"] = cmd.get("commandId")
+        print(json.dumps(result), flush=True)
+
+    elif action == "stop-full-check":
+        report_id = cmd.get("reportId")
+        result = await stop_full_check(report_id)
+        result["commandId"] = cmd.get("commandId")
+        print(json.dumps(result), flush=True)
+
+    elif action == "pause-half-check":
+        report_id = cmd.get("reportId")
+        result = await pause_half_check(report_id)
+        result["commandId"] = cmd.get("commandId")
+        print(json.dumps(result), flush=True)
+
+    elif action == "resume-half-check":
+        report_id = cmd.get("reportId")
+        result = await resume_half_check(report_id)
+        result["commandId"] = cmd.get("commandId")
+        print(json.dumps(result), flush=True)
+
+    elif action == "stop-half-check":
+        report_id = cmd.get("reportId")
+        result = await stop_half_check(report_id)
+        result["commandId"] = cmd.get("commandId")
+        print(json.dumps(result), flush=True)
+
     elif action == "delete-report":
         browser = await get_browser()
 
@@ -239,6 +418,35 @@ async def handle_command(cmd):
 
         print(json.dumps(result), flush=True)
 
+    elif action == "delete-multiple-reports":
+        browser = await get_browser()
+
+        report_ids = cmd.get("reportIds")
+        max_rounds = int(cmd.get("maxRounds", 10))
+
+        result = await delete_multiple_reports_flow(report_ids=report_ids, max_rounds=max_rounds)
+        result["commandId"] = cmd.get("commandId")
+
+        print(json.dumps(result), flush=True)
+
+    elif action == "pause-delete-report":
+        report_id = cmd.get("reportId")
+        result = await pause_delete_report(report_id)
+        result["commandId"] = cmd.get("commandId")
+        print(json.dumps(result), flush=True)   
+
+    elif action == "resume-delete-report":
+        report_id = cmd.get("reportId")
+        result = await resume_delete_report(report_id)
+        result["commandId"] = cmd.get("commandId")
+        print(json.dumps(result), flush=True)
+
+    elif action == "stop-delete-report":
+        report_id = cmd.get("reportId")
+        result = await stop_delete_report(report_id)
+        result["commandId"] = cmd.get("commandId")
+        print(json.dumps(result), flush=True)
+
     elif action == "delete-incomplete-assets":
         browser = await get_browser()
 
@@ -248,6 +456,30 @@ async def handle_command(cmd):
         result = await delete_incomplete_assets_flow(report_id=report_id, max_rounds=max_rounds)
         result["commandId"] = cmd.get("commandId")
 
+        print(json.dumps(result), flush=True)
+
+    elif action == "pause-delete-incomplete-assets":
+        report_id = cmd.get("reportId")
+
+        result = await pause_delete_incomplete_assets(report_id)
+        result["commandId"] = cmd.get("commandId")
+
+        print(json.dumps(result), flush=True)
+
+    elif action == "resume-delete-incomplete-assets":
+        report_id = cmd.get("reportId")
+
+        result = await resume_delete_incomplete_assets(report_id)
+        result["commandId"] = cmd.get("commandId")
+
+        print(json.dumps(result), flush=True)
+
+    elif action == "stop-delete-incomplete-assets":
+        report_id = cmd.get("reportId")
+
+        result = await stop_delete_incomplete_assets(report_id)
+        result["commandId"] = cmd.get("commandId")
+        
         print(json.dumps(result), flush=True)
 
     elif action == "handle-cancelled-report":
@@ -266,6 +498,28 @@ async def handle_command(cmd):
 
         print(json.dumps(result), flush=True)
 
+    elif action == "retry-ElRajhi-report":
+        browser = await get_browser()
+
+        batch_id = cmd.get("batchId")
+        tabs_num = int(cmd.get("tabsNum", 3))
+
+        result = await ElrajhiRetry(browser, batch_id, tabs_num)
+        result["commandId"] = cmd.get("commandId")
+
+        print(json.dumps(result), flush=True)
+
+    elif action == "elrajhi-retry-by-report-ids":
+        browser = await get_browser()
+
+        report_ids = cmd.get("reportIds")
+        tabs_num = int(cmd.get("tabsNum", 3))
+
+        result = await ElrajhiRetryByReportIds(browser, report_ids, tabs_num)
+        result["commandId"] = cmd.get("commandId")
+
+        print(json.dumps(result), flush=True)
+
     elif action == "navigate-to-company":
         browser = await get_browser()
 
@@ -274,6 +528,32 @@ async def handle_command(cmd):
         result = await navigate_to_company(browser, company)
         result["commandId"] = cmd.get("commandId")
 
+        print(json.dumps(result), flush=True)
+
+    
+    elif action == "pause-create-macros":
+        report_id = cmd.get("reportId")
+        result = await pause_create_macros(report_id)
+        result["commandId"] = cmd.get("commandId")
+        print(json.dumps(result), flush=True)
+
+    elif action == "resume-create-macros":
+        report_id = cmd.get("reportId")
+        result = await resume_create_macros(report_id)
+        result["commandId"] = cmd.get("commandId")
+        print(json.dumps(result), flush=True)
+
+    elif action == "stop-create-macros":
+        report_id = cmd.get("reportId")
+        result = await stop_create_macros(report_id)
+        result["commandId"] = cmd.get("commandId")
+        print(json.dumps(result), flush=True)
+
+
+    elif action == "get-reports-by-batch":
+        batch_id = cmd.get("batchId") or cmd.get("batch_id")
+        result = await get_reports_by_batch(batch_id)
+        result["commandId"] = cmd.get("commandId")
         print(json.dumps(result), flush=True)
 
     elif action == "create-reports-by-batch":
@@ -325,7 +605,7 @@ async def handle_command(cmd):
                 "create-macros", "grab-macro-ids", "macro-edit",
                 "pause-macro-edit", "resume-macro-edit", "stop-macro-edit",
                 "full-check", "half-check", "register", "close", "ping",
-                "duplicate-report"
+                "duplicate-report", "get-reports-by-batch"
             ],
             "commandId": cmd.get("commandId")
         }

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
     Search,
     CheckCircle,
@@ -9,7 +9,10 @@ import {
     Hash,
     Play,
     Database,
-    FileCheck
+    FileCheck,
+    Pause,
+    Resume,
+    StopCircle
 } from "lucide-react";
 
 // Import your API functions
@@ -35,9 +38,46 @@ const AssetCreate = () => {
     const [taqeemError, setTaqeemError] = useState("");
     const [dbError, setDbError] = useState("");
 
+    // NEW: Progress and control states
+    const [isCreating, setIsCreating] = useState(false);
+    const [progress, setProgress] = useState(null);
+    const [showControls, setShowControls] = useState(false);
+
     // Check if form is valid
     const isFormValid = reportId.trim() && tabsInput.trim() && assetCount.trim();
     const canCreateAssets = isFormValid && (reportExists === true || dbCheckResult?.success === true);
+
+    // Effect to listen for progress updates
+    useEffect(() => {
+        let unsubscribe = null;
+
+        if (window.electronAPI && window.electronAPI.onCreateMacrosProgress) {
+            unsubscribe = window.electronAPI.onCreateMacrosProgress((progressData) => {
+                console.log("Progress update received:", progressData);
+                setProgress(progressData);
+
+                // If we receive progress, show the control buttons
+                if (!showControls) {
+                    setShowControls(true);
+                }
+
+                // Check if the process is completed
+                if (progressData.status === 'COMPLETED' || progressData.status === 'FAILED') {
+                    setIsCreating(false);
+                    setTimeout(() => {
+                        setShowControls(false);
+                        setProgress(null);
+                    }, 3000);
+                }
+            });
+        }
+
+        return () => {
+            if (unsubscribe) {
+                unsubscribe();
+            }
+        };
+    }, [showControls]);
 
     // Handle report validation in Taqeem - matching ValidateReport component
     const handleCheckReportInTaqeem = async () => {
@@ -123,11 +163,14 @@ const AssetCreate = () => {
 
         setError("");
         setIsLoading(true);
+        setIsCreating(true);
+        setShowControls(true);
+        setProgress({ status: 'STARTING', message: 'Starting asset creation...' });
 
         try {
             console.log(`Creating assets for report: ${reportId}, count: ${count}, tabs: ${tabsNum}`);
 
-            // Use the createMacros function from Electron API (or update to direct API call if needed)
+            // Use the createMacros function from Electron API
             const result = await window.electronAPI.createMacros(reportId, count, tabsNum);
             console.log("Asset creation result:", result);
 
@@ -135,14 +178,87 @@ const AssetCreate = () => {
 
             if (result.status === 'SUCCESS') {
                 setIsSuccess(true);
+                setIsCreating(false);
+                setShowControls(false);
+                setProgress(null);
             } else {
                 setError(result.error || 'Failed to create assets');
+                setIsCreating(false);
+                setShowControls(false);
+                setProgress(null);
             }
         } catch (err) {
             console.error("Error creating assets:", err);
             setError(err.message || 'An unexpected error occurred during asset creation');
+            setIsCreating(false);
+            setShowControls(false);
+            setProgress(null);
         } finally {
             setIsLoading(false);
+        }
+    };
+
+    // NEW: Handle pause asset creation
+    const handlePauseCreateAssets = async () => {
+        try {
+            setProgress({ status: 'PAUSING', message: 'Pausing asset creation...' });
+            const result = await window.electronAPI.pauseCreateMacros(reportId);
+            console.log("Pause result:", result);
+
+            if (result.status === 'SUCCESS') {
+                setProgress({ status: 'PAUSED', message: 'Asset creation paused' });
+                setIsCreating(false);
+            } else {
+                setError(result.error || 'Failed to pause asset creation');
+            }
+        } catch (err) {
+            console.error("Error pausing asset creation:", err);
+            setError(err.message || 'Failed to pause asset creation');
+        }
+    };
+
+    // NEW: Handle resume asset creation
+    const handleResumeCreateAssets = async () => {
+        try {
+            setProgress({ status: 'RESUMING', message: 'Resuming asset creation...' });
+            const result = await window.electronAPI.resumeCreateMacros(reportId);
+            console.log("Resume result:", result);
+
+            if (result.status === 'SUCCESS') {
+                setProgress({ status: 'IN_PROGRESS', message: 'Asset creation resumed' });
+                setIsCreating(true);
+            } else {
+                setError(result.error || 'Failed to resume asset creation');
+            }
+        } catch (err) {
+            console.error("Error resuming asset creation:", err);
+            setError(err.message || 'Failed to resume asset creation');
+        }
+    };
+
+    // NEW: Handle stop asset creation
+    const handleStopCreateAssets = async () => {
+        try {
+            setProgress({ status: 'STOPPING', message: 'Stopping asset creation...' });
+            const result = await window.electronAPI.stopCreateMacros(reportId);
+            console.log("Stop result:", result);
+
+            if (result.status === 'SUCCESS') {
+                setProgress({ status: 'STOPPED', message: 'Asset creation stopped' });
+                setIsCreating(false);
+                setIsLoading(false);
+
+                // Hide controls after a delay
+                setTimeout(() => {
+                    setShowControls(false);
+                    setProgress(null);
+                }, 2000);
+            } else {
+                setError(result.error || 'Failed to stop asset creation');
+            }
+        } catch (err) {
+            console.error("Error stopping asset creation:", err);
+            setError(err.message || 'Failed to stop asset creation');
         }
     };
 
@@ -161,11 +277,55 @@ const AssetCreate = () => {
         setDbCheckResult(null);
         setTaqeemError("");
         setDbError("");
+        setIsCreating(false);
+        setProgress(null);
+        setShowControls(false);
     };
 
     // Handle back button
     const handleBack = () => {
         resetProcess();
+    };
+
+    // Format progress message for display
+    const getProgressDisplay = () => {
+        if (!progress) return null;
+
+        const statusColors = {
+            STARTING: 'text-blue-600',
+            IN_PROGRESS: 'text-green-600',
+            PAUSING: 'text-yellow-600',
+            PAUSED: 'text-yellow-600',
+            RESUMING: 'text-blue-600',
+            STOPPING: 'text-red-600',
+            STOPPED: 'text-red-600',
+            COMPLETED: 'text-green-600',
+            FAILED: 'text-red-600'
+        };
+
+        const statusIcons = {
+            STARTING: <RefreshCw className="w-4 h-4 animate-spin" />,
+            IN_PROGRESS: <RefreshCw className="w-4 h-4 animate-spin" />,
+            PAUSING: <Pause className="w-4 h-4" />,
+            PAUSED: <Pause className="w-4 h-4" />,
+            RESUMING: <RefreshCw className="w-4 h-4 animate-spin" />,
+            STOPPING: <StopCircle className="w-4 h-4" />,
+            STOPPED: <StopCircle className="w-4 h-4" />,
+            COMPLETED: <CheckCircle className="w-4 h-4" />,
+            FAILED: <FileText className="w-4 h-4" />
+        };
+
+        return (
+            <div className={`flex items-center gap-2 ${statusColors[progress.status] || 'text-gray-600'}`}>
+                {statusIcons[progress.status] || <RefreshCw className="w-4 h-4" />}
+                <span className="font-medium">{progress.message}</span>
+                {progress.current && progress.total && (
+                    <span className="text-sm">
+                        ({progress.current}/{progress.total})
+                    </span>
+                )}
+            </div>
+        );
     };
 
     return (
@@ -279,7 +439,7 @@ const AssetCreate = () => {
                                         <div className="flex-1 flex flex-col">
                                             <button
                                                 onClick={handleCheckReportInTaqeem}
-                                                disabled={isCheckingDB}
+                                                disabled={isCheckingDB || isCreating}
                                                 className="w-full px-4 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded-lg font-semibold flex items-center justify-center gap-2 transition-colors whitespace-nowrap"
                                             >
                                                 {isCheckingReport ? (
@@ -303,7 +463,7 @@ const AssetCreate = () => {
                                         <div className="flex-1 flex flex-col">
                                             <button
                                                 onClick={handleCheckReportInDB}
-                                                disabled={isCheckingReport}
+                                                disabled={isCheckingReport || isCreating}
                                                 className="w-full px-4 py-3 bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white rounded-lg font-semibold flex items-center justify-center gap-2 transition-colors whitespace-nowrap"
                                             >
                                                 {isCheckingDB ? (
@@ -403,7 +563,8 @@ const AssetCreate = () => {
                                         }}
                                         min="1"
                                         max="10"
-                                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors"
+                                        disabled={isCreating}
+                                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors disabled:bg-gray-100 disabled:cursor-not-allowed"
                                         placeholder="Enter number of tabs (default: 3)"
                                     />
                                     <p className="text-xs text-gray-500 mt-1">
@@ -425,7 +586,8 @@ const AssetCreate = () => {
                                             setError("");
                                         }}
                                         min="1"
-                                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors"
+                                        disabled={isCreating}
+                                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-colors disabled:bg-gray-100 disabled:cursor-not-allowed"
                                         placeholder="Enter number of assets"
                                     />
                                     <p className="text-xs text-gray-500 mt-1">
@@ -466,6 +628,33 @@ const AssetCreate = () => {
                                     </div>
                                 )}
 
+                                {/* Progress Display */}
+                                {progress && (
+                                    <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                                        <div className="flex items-center justify-between">
+                                            <div className="flex items-center gap-3">
+                                                {getProgressDisplay()}
+                                            </div>
+                                            {progress.percentage !== undefined && (
+                                                <div className="text-right">
+                                                    <div className="text-sm text-gray-600">Progress</div>
+                                                    <div className="font-bold text-blue-700">{progress.percentage}%</div>
+                                                </div>
+                                            )}
+                                        </div>
+                                        {progress.percentage !== undefined && (
+                                            <div className="mt-3">
+                                                <div className="h-2 bg-blue-100 rounded-full overflow-hidden">
+                                                    <div
+                                                        className="h-full bg-blue-600 rounded-full transition-all duration-300"
+                                                        style={{ width: `${progress.percentage}%` }}
+                                                    />
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+
                                 {/* General Error Display (for asset creation) */}
                                 {error && (
                                     <div className="bg-red-50 border border-red-200 rounded-lg p-4">
@@ -480,23 +669,54 @@ const AssetCreate = () => {
                                 <div className="flex flex-col sm:flex-row gap-3 pt-4">
                                     <button
                                         onClick={handleBack}
-                                        className="flex-1 px-6 py-3 bg-gray-500 hover:bg-gray-600 text-white rounded-lg font-semibold flex items-center justify-center gap-2 transition-colors"
+                                        disabled={isCreating}
+                                        className="flex-1 px-6 py-3 bg-gray-500 hover:bg-gray-600 disabled:bg-gray-400 text-white rounded-lg font-semibold flex items-center justify-center gap-2 transition-colors"
                                     >
                                         <ArrowLeft className="w-4 h-4" />
                                         Back
                                     </button>
-                                    <button
-                                        onClick={handleCreateAssets}
-                                        disabled={isLoading}
-                                        className="flex-1 px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded-lg font-semibold flex items-center justify-center gap-2 transition-colors"
-                                    >
-                                        {isLoading ? (
-                                            <RefreshCw className="w-4 h-4 animate-spin" />
-                                        ) : (
-                                            <Play className="w-4 h-4" />
-                                        )}
-                                        {isLoading ? "Creating Assets..." : "Create Assets"}
-                                    </button>
+
+                                    {!showControls ? (
+                                        <button
+                                            onClick={handleCreateAssets}
+                                            disabled={!canCreateAssets || isCreating || isLoading}
+                                            className="flex-1 px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white rounded-lg font-semibold flex items-center justify-center gap-2 transition-colors"
+                                        >
+                                            {isLoading ? (
+                                                <RefreshCw className="w-4 h-4 animate-spin" />
+                                            ) : (
+                                                <Play className="w-4 h-4" />
+                                            )}
+                                            {isLoading ? "Creating Assets..." : "Create Assets"}
+                                        </button>
+                                    ) : (
+                                        <div className="flex-1 flex gap-2">
+                                            {isCreating ? (
+                                                <button
+                                                    onClick={handlePauseCreateAssets}
+                                                    className="flex-1 px-4 py-3 bg-yellow-500 hover:bg-yellow-600 text-white rounded-lg font-semibold flex items-center justify-center gap-2 transition-colors"
+                                                >
+                                                    <Pause className="w-4 h-4" />
+                                                    Pause
+                                                </button>
+                                            ) : (
+                                                <button
+                                                    onClick={handleResumeCreateAssets}
+                                                    className="flex-1 px-4 py-3 bg-green-600 hover:bg-green-700 text-white rounded-lg font-semibold flex items-center justify-center gap-2 transition-colors"
+                                                >
+                                                    <RefreshCw className="w-4 h-4" />
+                                                    Resume
+                                                </button>
+                                            )}
+                                            <button
+                                                onClick={handleStopCreateAssets}
+                                                className="flex-1 px-4 py-3 bg-red-600 hover:bg-red-700 text-white rounded-lg font-semibold flex items-center justify-center gap-2 transition-colors"
+                                            >
+                                                <StopCircle className="w-4 h-4" />
+                                                Stop
+                                            </button>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                         </div>
