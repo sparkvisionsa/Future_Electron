@@ -69,10 +69,13 @@
     "afterPack": "build/afterPack.js"
   },
   "dependencies": {
+    "@napi-rs/canvas": "^0.1.84",
     "axios": "^1.13.2",
+    "docx": "^9.5.1",
     "dotenv": "^17.2.3",
     "exceljs": "^4.4.0",
     "lucide-react": "^0.554.0",
+    "pizzip": "^3.2.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

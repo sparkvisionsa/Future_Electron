@@ -1,6 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 const ExcelJS = require('exceljs');
+const { createCanvas, loadImage } = require('@napi-rs/canvas');
+const PizZip = require('pizzip');
 
 const MAIN_FOLDERS = [
     '1.ملفات العميل',
@@ -11,8 +13,11 @@ const MAIN_FOLDERS = [
 ];
 
 const LOCATION_FOLDER_INDEX = 1; // second folder
-const CALC_SOURCE_PATH = '/home/mostafa-hosny/Desktop/Electron/Future_Electron/excelfile_calc/calc.xlsx';
+const CALC_SOURCE_PATH = path.resolve(__dirname, '../../../excelfile_calc/calc.xlsx');
+const REPORT_TEMPLATE_PATH = path.resolve(__dirname, '../../../excelfile_calc/report.docx');
 const CALC_TARGET_NAME = 'calc.xlsx';
+const VALUE_IMAGE_FOLDER = 'valu calculations';
+const DOCX_MARKER_TEXT = 'مرفق 1: الوصف الجزئي وحسابات القيمة';
 
 const sanitizeName = (name) => {
     if (!name && name !== 0) return '';
@@ -76,6 +81,231 @@ function getSheetBounds(sheet) {
         });
     });
     return { maxRow, maxCol };
+}
+
+function computeCellValue(sheet, address, workbook, cache = new Map(), stack = new Set()) {
+    if (!sheet || !address) return '';
+    const key = `${sheet.name}::${address}`;
+    if (cache.has(key)) return cache.get(key);
+    if (stack.has(key)) return ''; // cycle guard
+    stack.add(key);
+
+    const cell = sheet.getCell(address);
+    const raw = cell?.value;
+
+    const finish = (val) => {
+        cache.set(key, val);
+        stack.delete(key);
+        return val;
+    };
+
+    if (raw === null || typeof raw === 'undefined') return finish('');
+    if (raw === 0 || raw === false) return finish(raw);
+    if (typeof raw === 'string' || typeof raw === 'number') return finish(raw);
+    if (raw instanceof Date) return finish(raw.toLocaleDateString('en-GB'));
+
+    if (typeof raw === 'object') {
+        if (typeof raw.result !== 'undefined' && raw.result !== null) return finish(raw.result);
+
+        const formulaStr = raw.formula || raw.sharedFormula;
+        if (formulaStr) {
+            const exprRaw = formulaStr.startsWith('=') ? formulaStr.slice(1) : formulaStr;
+
+            const parseRef = (rawRef) => {
+                if (!rawRef) return null;
+                const refRegex = /^'?([^'!]+)'?!\$?([A-Z]+)\$?([0-9]+)$/u;
+                const noSheetRegex = /^\$?([A-Z]+)\$?([0-9]+)$/u;
+                const m1 = rawRef.match(refRegex);
+                if (m1) return { sheetName: m1[1], col: m1[2], row: m1[3] };
+                const m2 = rawRef.match(noSheetRegex);
+                if (m2) return { sheetName: null, col: m2[1], row: m2[2] };
+                return null;
+            };
+
+            const simpleSheetRef = parseRef(exprRaw);
+            if (simpleSheetRef) {
+                const targetSheet = simpleSheetRef.sheetName ? (workbook?.getWorksheet(simpleSheetRef.sheetName) || sheet) : sheet;
+                const addr = `${simpleSheetRef.col}${simpleSheetRef.row}`;
+                return finish(computeCellValue(targetSheet, addr, workbook, cache, stack));
+            }
+
+            if (/[^0-9A-Za-z_!+*\/\-\(\)\.\s]/.test(exprRaw)) {
+                return finish('');
+            }
+
+            let expr = exprRaw;
+            expr = expr.replace(/'([^']+)'!\$?([A-Z]+)\$?([0-9]+)/gu, (_m, sheetName, col, row) => {
+                const refSheet = workbook?.getWorksheet(sheetName) || sheet;
+                const addr = `${col}${row}`;
+                const val = computeCellValue(refSheet, addr, workbook, cache, stack);
+                const num = Number(val);
+                return Number.isFinite(num) ? num : 0;
+            });
+            expr = expr.replace(/([A-Za-z0-9 _.-]+)!\$?([A-Z]+)\$?([0-9]+)/g, (_m, sheetName, col, row) => {
+                const refSheet = workbook?.getWorksheet(sheetName) || sheet;
+                const addr = `${col}${row}`;
+                const val = computeCellValue(refSheet, addr, workbook, cache, stack);
+                const num = Number(val);
+                return Number.isFinite(num) ? num : 0;
+            });
+            expr = expr.replace(/\$?([A-Z]+)\$?([0-9]+)/g, (_m, col, row) => {
+                const addr = `${col}${row}`;
+                const val = computeCellValue(sheet, addr, workbook, cache, stack);
+                const num = Number(val);
+                return Number.isFinite(num) ? num : 0;
+            });
+
+            try {
+                // eslint-disable-next-line no-new-func
+                const result = Function(`"use strict"; return (${expr});`)();
+                return finish(result);
+            } catch (_) {
+                return finish('');
+            }
+        }
+
+        if (Array.isArray(raw.richText)) return finish(raw.richText.map((r) => r.text).join(''));
+        if (raw.text) return finish(raw.text);
+    }
+
+    return finish('');
+}
+
+function getCellDisplay(cell, workbook, currentSheet) {
+    if (!cell) return '';
+    try {
+        const t = cell.text;
+        if (typeof t === 'number') return applyCustomFormat(String(t), cell.address, workbook);
+        if (typeof t === 'string' && t.trim().length) return applyCustomFormat(t.trim(), cell.address, workbook);
+    } catch (_) {
+        // exceljs may throw on merged cells; ignore and fallback to value
+    }
+
+    const v = cell.value;
+    if (v === 0 || v === false) return applyCustomFormat(String(v), cell.address, workbook);
+    if (v === null || typeof v === 'undefined') return applyCustomFormat('', cell.address, workbook);
+    if (typeof v === 'string' || typeof v === 'number') return applyCustomFormat(String(v), cell.address, workbook);
+    if (v instanceof Date) return applyCustomFormat(v.toLocaleDateString('en-GB'), cell.address, workbook);
+    if (typeof v === 'object') {
+        if (v.formula || v.sharedFormula) {
+            const formulaStr = (v.formula || v.sharedFormula || '').toString();
+            const directDataRef = formulaStr.match(/^[=]?\s*data!\$?([A-Z]+)\$?([0-9]+)/i);
+            if (directDataRef) {
+                const col = directDataRef[1];
+                const row = directDataRef[2];
+                const dataSheet = workbook?.getWorksheet('data') || workbook?.getWorksheet('Data') || workbook?.worksheets.find((ws) => ws.name.toLowerCase() === 'data');
+                const refCell = dataSheet?.getCell(`${col}${row}`);
+                if (refCell) {
+                    try {
+                        const refText = refCell.text;
+                        if (typeof refText !== 'undefined' && refText !== null) return applyCustomFormat(String(refText), cell.address, workbook);
+                    } catch (_) { /* ignore */ }
+                    const refVal = refCell.value;
+                    if (refVal !== null && typeof refVal !== 'undefined') return applyCustomFormat(String(refVal), cell.address, workbook);
+                }
+            }
+        }
+        const addr = cell.address;
+        const computed = computeCellValue(currentSheet, addr, workbook);
+        if (computed !== undefined && computed !== null && computed !== '') return applyCustomFormat(String(computed), addr, workbook);
+        if (Array.isArray(v.richText)) return applyCustomFormat(v.richText.map((r) => r.text).join(''), addr, workbook);
+        if (v.text) return applyCustomFormat(String(v.text), addr, workbook);
+        if (typeof v.result !== 'undefined' && v.result !== null) return applyCustomFormat(String(v.result), addr, workbook);
+        if (typeof v.formula !== 'undefined') {
+            const res = typeof cell.result !== 'undefined' && cell.result !== null ? cell.result : v.result;
+            if (typeof res !== 'undefined' && res !== null) return applyCustomFormat(String(res), addr, workbook);
+            return applyCustomFormat(v.formula ? String(v.formula) : '', addr, workbook);
+        }
+    }
+    const formatted = applyCustomFormat('', cell.address, workbook);
+    return formatted;
+}
+
+function formatNumberWithCommas(str) {
+    const num = Number(str);
+    if (!Number.isFinite(num)) return str;
+    if (Math.abs(num) < 1000) return str;
+    const [intPart, decPart] = num.toString().split('.');
+    const formattedInt = Number(intPart).toLocaleString('en-US');
+    return decPart ? `${formattedInt}.${decPart}` : formattedInt;
+}
+
+function applyCustomFormat(rawValue, cellAddress, workbook) {
+    const match = cellAddress?.match(/^([A-Z]+)([0-9]+)$/);
+    const inRange = (c, r, ranges) => ranges.some(([sc, sr, ec, er]) => {
+        const colIdx = (name) => name.charCodeAt(0) - 'A'.charCodeAt(0) + 1;
+        const cIdx = colIdx(c);
+        const scIdx = colIdx(sc);
+        const ecIdx = colIdx(ec);
+        return cIdx >= scIdx && cIdx <= ecIdx && r >= sr && r <= er;
+    });
+
+    // Excluded from default zero filling
+    const zeroExclusions = [
+        ['B', 1, 'K', 1],
+        ['B', 4, 'K', 4],
+        ['L', 1, 'N', 4]
+    ];
+
+    if (!match) {
+        const valStr = rawValue === null || typeof rawValue === 'undefined' ? '' : String(rawValue);
+        return valStr;
+    }
+
+    const col = match[1];
+    const row = Number(match[2]);
+    const isExcluded = inRange(col, row, zeroExclusions);
+    const value = rawValue === null || typeof rawValue === 'undefined' || rawValue === '' ? (isExcluded ? '' : '0') : String(rawValue);
+
+    const percentRanges = [
+        ['G', 6, 'G', 8],
+        ['I', 6, 'I', 8],
+        ['K', 6, 'K', 8],
+        ['L', 6, 'L', 8]
+    ];
+    const currencyCells = [
+        ['K', 3, 'K', 3],
+        ['E', 6, 'E', 8],
+        ['M', 6, 'M', 8]
+    ];
+    const noCommaRanges = [
+        ['G', 3, 'G', 3],
+        ['F', 6, 'F', 8]
+    ];
+
+    // Percent formatting (convert decimals to percent)
+    if (inRange(col, row, percentRanges)) {
+        let numStr = value.trim();
+        if (numStr === '') numStr = '0';
+        let numVal = Number(numStr.replace('%', ''));
+        if (Number.isFinite(numVal)) {
+            if (Math.abs(numVal) <= 1) {
+                numVal = numVal * 100;
+            }
+            const rounded = Number(numVal.toFixed(2));
+            const absRounded = Math.abs(rounded);
+            const display = absRounded % 1 === 0 ? rounded.toString() : rounded.toFixed(2).replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1');
+            const formatted = formatNumberWithCommas(display);
+            return `${formatted}%`;
+        }
+        return `${numStr}%`;
+    }
+
+    // Currency formatting
+    if (inRange(col, row, currencyCells)) {
+        const numStr = value.trim() === '' ? '0' : value;
+        const formatted = formatNumberWithCommas(numStr);
+        return `${formatted} ر.س.`;
+    }
+
+    // Default number formatting with commas if > 1000
+    const num = Number(value);
+    if (Number.isFinite(num)) {
+        if (inRange(col, row, noCommaRanges)) return value;
+        return formatNumberWithCommas(value);
+    }
+
+    return value;
 }
 
 async function copyDataSheet(dataExcelPath, calcPath) {
@@ -262,6 +492,392 @@ async function createCalcSheets(dataExcelPath, calcPath) {
     await calcWorkbook.xlsx.writeFile(calcPath);
 }
 
+async function readDocxNamesFromCalc(calcPath) {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.readFile(calcPath);
+    const sheet = workbook.getWorksheet('data') || workbook.worksheets[0];
+    if (!sheet) throw new Error('لم يتم العثور على شيت data في calc.xlsx');
+
+    const { maxRow } = getSheetBounds(sheet);
+    const names = [];
+    for (let r = 2; r <= maxRow; r++) {
+        const row = sheet.getRow(r);
+        const colA = sanitizeName(row.getCell('A').value) || `${r - 1}`;
+        const colB = sanitizeName(row.getCell('B').value);
+        if (!colB) continue;
+        const rawName = `${colA}- ${colB}`;
+        names.push(`${rawName}.docx`);
+    }
+    return names;
+}
+
+async function createDocxFiles(basePath, folderName, calcPath) {
+    if (!basePath || !folderName || !calcPath) {
+        throw new Error('basePath, folderName, and calcPath are required.');
+    }
+    if (!fs.existsSync(calcPath)) {
+        throw new Error(`لم يتم العثور على calc.xlsx في المسار: ${calcPath}`);
+    }
+    if (!fs.existsSync(REPORT_TEMPLATE_PATH)) {
+        throw new Error(`لم يتم العثور على report.docx في المسار: ${REPORT_TEMPLATE_PATH}`);
+    }
+
+    const targetDir = path.join(basePath, folderName, MAIN_FOLDERS[2]);
+    await ensureDir(targetDir);
+
+    const docNames = await readDocxNamesFromCalc(calcPath);
+    let created = 0;
+    for (const fileName of docNames) {
+        const dest = path.join(targetDir, fileName);
+        await fs.promises.copyFile(REPORT_TEMPLATE_PATH, dest);
+        created += 1;
+    }
+
+    return { targetDir, created };
+}
+
+function computeSheetNameMap(workbook, dataSheet) {
+    const { maxRow } = getSheetBounds(dataSheet);
+    const entries = [];
+
+    const findSheetName = (base) => {
+        const exact = workbook.getWorksheet(base);
+        if (exact) return exact.name;
+        const candidate = workbook.worksheets.find((ws) => ws.name === base || ws.name.startsWith(`${base}_`));
+        return candidate ? candidate.name : null;
+    };
+
+    for (let r = 2; r <= maxRow; r++) {
+        const row = dataSheet.getRow(r);
+        const colB = sanitizeName(row.getCell('B').value);
+        if (!colB) continue;
+        const colA = sanitizeName(row.getCell('A').value) || `${r - 1}`;
+        const sheetName = findSheetName(colB);
+        if (!sheetName) continue;
+        entries.push({ rowIndex: r, sheetName, colA, colB });
+    }
+
+    return entries;
+}
+
+function renderSheetRangeToPng(sheet, workbook) {
+    const rows = 8;
+    const cols = 14; // A..N
+    const padding = 8;
+    const colWidths = [];
+    for (let c = 1; c <= cols; c++) {
+        const w = sheet.getColumn(c)?.width;
+        const px = Math.max(40, Math.min(160, (w || 12) * 7));
+        colWidths.push(px);
+    }
+    const rowHeights = [];
+    for (let r = 1; r <= rows; r++) {
+        const h = sheet.getRow(r)?.height;
+        const px = Math.max(18, Math.min(80, (h || 18) * 1.2));
+        rowHeights.push(px);
+    }
+
+    // Pre-calc row heights based on wrapped text so values aren't cut off
+    const measureCanvas = createCanvas(1, 1);
+    const measureCtx = measureCanvas.getContext('2d');
+    for (let r = 1; r <= rows; r++) {
+        for (let c = 1; c <= cols; c++) {
+            const cell = sheet.getCell(r, c);
+            const text = getCellDisplay(cell, workbook, sheet);
+            if (!text) continue;
+            const hasArabic = /[\u0600-\u06FF]/.test(text);
+            const isBold = cell?.style?.font?.bold || r === 1 || r === 5;
+            const baseFontSize = 13;
+            const headerFontSize = 14;
+            const fontSize = isBold ? headerFontSize : baseFontSize;
+            const fontFamily = '"DejaVu Sans","Noto Naskh Arabic","Arial Unicode MS","Segoe UI","Arial","Tahoma",sans-serif';
+            measureCtx.font = `${isBold ? 'bold ' : '600 '} ${fontSize}px ${fontFamily}`;
+            const maxTextWidth = Math.max(20, colWidths[c - 1] - padding * 2);
+            const textWidth = measureCtx.measureText(text).width;
+            const lines = Math.max(1, Math.ceil(textWidth / maxTextWidth));
+            const heightNeeded = lines * fontSize * 1.3 + padding * 2;
+            rowHeights[r - 1] = Math.max(rowHeights[r - 1], heightNeeded);
+        }
+    }
+
+    const totalWidth = colWidths.reduce((a, b) => a + b, 0) + 2;
+    const totalHeight = rowHeights.reduce((a, b) => a + b, 0) + 2;
+    const scale = 2; // render at higher resolution for sharper output
+
+    const canvas = createCanvas(totalWidth * scale, totalHeight * scale);
+    const ctx = canvas.getContext('2d');
+    ctx.scale(scale, scale);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, totalWidth, totalHeight);
+    ctx.strokeStyle = '#b8b8b8';
+    ctx.lineWidth = 1;
+
+    const argbToRgba = (argb) => {
+        if (!argb || typeof argb !== 'string') return null;
+        const hex = argb.replace(/^0x/i, '').padStart(8, 'F');
+        const a = parseInt(hex.slice(0, 2), 16) / 255;
+        const r = parseInt(hex.slice(2, 4), 16);
+        const g = parseInt(hex.slice(4, 6), 16);
+        const b = parseInt(hex.slice(6, 8), 16);
+        return `rgba(${r},${g},${b},${a})`;
+    };
+
+    // Build merge map within the rendered range
+    const merges = sheet.model?.merges || sheet._merges || [];
+    const mergeList = Array.isArray(merges) ? merges : Object.keys(merges || {});
+    const mergeMap = new Map();
+    mergeList.forEach((m) => {
+        const ref = m || '';
+        const [start, end] = ref.split(':');
+        if (!start || !end) return;
+        const startCell = sheet.getCell(start);
+        const endCell = sheet.getCell(end);
+        const top = startCell.row;
+        const left = startCell.col;
+        const bottom = endCell.row;
+        const right = endCell.col;
+        if (top > rows || left > cols || bottom < 1 || right < 1) return;
+        mergeMap.set(`${top}-${left}`, { top, left, bottom, right });
+    });
+
+    const isCoveredByMerge = (r, c) => {
+        for (const merge of mergeMap.values()) {
+            if (r >= merge.top && r <= merge.bottom && c >= merge.left && c <= merge.right) {
+                if (merge.top !== r || merge.left !== c) return true;
+            }
+        }
+        return false;
+    };
+
+    let y = 1;
+    for (let r = 1; r <= rows; r++) {
+        let x = 1;
+        const rowHeight = rowHeights[r - 1];
+        for (let c = 1; c <= cols; c++) {
+            if (isCoveredByMerge(r, c)) {
+                x += colWidths[c - 1];
+                continue;
+            }
+
+            const merge = mergeMap.get(`${r}-${c}`);
+            const spanCols = merge ? merge.right - merge.left + 1 : 1;
+            const spanRows = merge ? merge.bottom - merge.top + 1 : 1;
+            const cellWidth = colWidths.slice(c - 1, c - 1 + spanCols).reduce((a, b) => a + b, 0);
+            const cellHeight = rowHeights.slice(r - 1, r - 1 + spanRows).reduce((a, b) => a + b, 0);
+
+            const cell = sheet.getCell(r, c);
+            const fill = cell?.style?.fill;
+            if (fill?.fgColor?.argb) {
+                const rgba = argbToRgba(fill.fgColor.argb);
+                if (rgba) {
+                    ctx.fillStyle = rgba;
+                    ctx.fillRect(x, y, cellWidth, cellHeight);
+                }
+            }
+
+            ctx.strokeRect(x, y, cellWidth, cellHeight);
+
+            const text = getCellDisplay(cell, workbook, sheet);
+            ctx.save();
+            const hasArabic = /[\u0600-\u06FF]/.test(text);
+            const align = cell?.style?.alignment?.horizontal || (hasArabic ? 'right' : 'center');
+            ctx.textAlign = align === 'right' ? 'right' : align === 'left' ? 'left' : 'center';
+            ctx.direction = hasArabic ? 'rtl' : 'ltr';
+            const isBold = cell?.style?.font?.bold || r === 1 || r === 5;
+            const baseFontSize = 13;
+            const headerFontSize = 14;
+            const fontSize = isBold ? headerFontSize : baseFontSize;
+            const fontFamily = '"DejaVu Sans","Noto Naskh Arabic","Arial Unicode MS","Segoe UI","Arial","Tahoma",sans-serif';
+            ctx.font = `${isBold ? 'bold ' : '600 '} ${fontSize}px ${fontFamily}`;
+            const fontColor = cell?.style?.font?.color?.argb;
+            ctx.fillStyle = fontColor ? argbToRgba(fontColor) || '#222' : '#222';
+            const maxTextWidth = Math.max(20, cellWidth - padding * 2);
+
+            const wrapText = (t) => {
+                const words = t.split(/\s+/);
+                const lines = [];
+                let line = '';
+                for (let wi = 0; wi < words.length; wi++) {
+                    const word = words[wi];
+                    const testLine = line ? `${line} ${word}` : word;
+                    if (ctx.measureText(testLine).width <= maxTextWidth) {
+                        line = testLine;
+                    } else {
+                        if (line) lines.push(line);
+                        line = word;
+                    }
+                }
+                if (line) lines.push(line);
+                if (!lines.length) lines.push(t);
+                return lines;
+            };
+
+            const lines = wrapText(text);
+            const lineHeight = fontSize * 1.3;
+            const blockHeight = lines.length * lineHeight;
+            let textX = x + padding;
+            if (ctx.textAlign === 'center') textX = x + cellWidth / 2;
+            if (ctx.textAlign === 'right') textX = x + cellWidth - padding;
+            const startY = y + (cellHeight - blockHeight) / 2 + fontSize;
+            lines.forEach((line, idx) => {
+                const lineY = startY + idx * lineHeight;
+                ctx.fillText(line, textX, lineY);
+            });
+            ctx.restore();
+
+            x += colWidths[c - 1];
+        }
+        y += rowHeight;
+    }
+
+    return {
+        buffer: canvas.toBuffer('image/png'),
+        width: totalWidth * scale,
+        height: totalHeight * scale
+    };
+}
+
+async function flipImageHorizontal(buffer, width, height) {
+    const img = await loadImage(buffer);
+    const canvas = createCanvas(width, height);
+    const ctx = canvas.getContext('2d');
+    ctx.translate(width, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(img, 0, 0, width, height);
+    return {
+        buffer: canvas.toBuffer('image/png'),
+        width,
+        height
+    };
+}
+
+function appendImageToDocx(docxPath, imageBuffer, size, markerText = DOCX_MARKER_TEXT) {
+    const docXmlPath = 'word/document.xml';
+    const relsPath = 'word/_rels/document.xml.rels';
+    const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    const content = fs.readFileSync(docxPath);
+    const zip = new PizZip(content);
+    const docFile = zip.file(docXmlPath);
+    if (!docFile) throw new Error('document.xml غير موجود داخل التقرير.');
+
+    let docXml = docFile.asText();
+    let relsXml = zip.file(relsPath)?.asText();
+    if (!relsXml) {
+        relsXml = '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
+    }
+
+    const existingIds = Array.from(relsXml.matchAll(/Id="rId(\d+)"/g)).map((m) => Number(m[1]));
+    const nextId = (existingIds.length ? Math.max(...existingIds) : 0) + 1;
+    const relId = `rId${nextId}`;
+    const imageName = `image_${Date.now()}_${Math.floor(Math.random() * 100000)}.png`;
+
+    // Add relationship entry
+    const relTag = `<Relationship Id="${relId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${imageName}"/>`;
+    relsXml = relsXml.replace('</Relationships>', `${relTag}</Relationships>`);
+    zip.file(relsPath, relsXml);
+
+    // Add image binary
+    zip.file(`word/media/${imageName}`, imageBuffer);
+
+    // Insert drawing into document body (after marker paragraph if found, otherwise appended)
+    const targetWidthPx = 850; // wider image
+    const targetHeightPx = 250; // height unchanged
+    const cx = Math.round(targetWidthPx * 9525); // px to EMU
+    const cy = Math.round(targetHeightPx * 9525);
+    const leftIndentTwips = 1400; // more left margin
+    const rightIndentTwips = 50; // keep small right indent
+    const spacingBeforeTwips = 250; // slight spacing above
+    const drawingXml = `
+      <w:p>
+        <w:pPr>
+          <w:ind w:left="${leftIndentTwips}" w:right="${rightIndentTwips}"/>
+          <w:spacing w:before="${spacingBeforeTwips}"/>
+          <w:jc w="right"/>
+        </w:pPr>
+        <w:r>
+          <w:drawing>
+            <wp:inline distT="0" distB="0" distL="0" distR="0" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">
+              <wp:extent cx="${cx}" cy="${cy}"/>
+              <wp:docPr id="${nextId}" name="SheetImage"/>
+              <a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+                <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                  <pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                    <pic:nvPicPr>
+                      <pic:cNvPr id="0" name="${imageName}"/>
+                      <pic:cNvPicPr/>
+                    </pic:nvPicPr>
+                    <pic:blipFill>
+                      <a:blip r:embed="${relId}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>
+                      <a:stretch>
+                        <a:fillRect/>
+                      </a:stretch>
+                    </pic:blipFill>
+                    <pic:spPr>
+                      <a:xfrm>
+                        <a:off x="0" y="0"/>
+                        <a:ext cx="${cx}" cy="${cy}"/>
+                      </a:xfrm>
+                      <a:prstGeom prst="rect">
+                        <a:avLst/>
+                      </a:prstGeom>
+                    </pic:spPr>
+                  </pic:pic>
+                </a:graphicData>
+              </a:graphic>
+            </wp:inline>
+          </w:drawing>
+        </w:r>
+      </w:p>
+    `;
+
+    let insertionPoint = -1;
+    if (markerText) {
+        const paragraphs = docXml.match(/<w:p[\s\S]*?<\/w:p>/g) || [];
+        let lastMatchStart = -1;
+        let lastMatchLength = 0;
+        for (const p of paragraphs) {
+            const plain = p.replace(/<[^>]+>/g, '');
+            if (plain.includes(markerText)) {
+                const paraStart = docXml.indexOf(p, lastMatchStart + 1);
+                if (paraStart !== -1) {
+                    lastMatchStart = paraStart;
+                    lastMatchLength = p.length;
+                }
+            }
+        }
+        if (lastMatchStart !== -1) {
+            insertionPoint = lastMatchStart + lastMatchLength;
+        }
+
+        // Fallback simple search (use last occurrence)
+        if (insertionPoint === -1 && docXml.includes(markerText)) {
+            const markerIdx = docXml.lastIndexOf(markerText);
+            const paraStart = docXml.lastIndexOf('<w:p', markerIdx);
+            const paraEnd = docXml.indexOf('</w:p>', markerIdx);
+            if (paraStart >= 0 && paraEnd > paraStart) {
+                insertionPoint = paraEnd + '</w:p>'.length; // after closing </w:p>
+            }
+        }
+    }
+
+    if (insertionPoint === -1) {
+        if (docXml.includes('</w:body></w:document>')) {
+            docXml = docXml.replace('</w:body></w:document>', `${drawingXml}</w:body></w:document>`);
+        } else if (docXml.includes('</w:body>')) {
+            docXml = docXml.replace('</w:body>', `${drawingXml}</w:body>`);
+        } else {
+            docXml += drawingXml;
+        }
+    } else {
+        docXml = `${docXml.slice(0, insertionPoint)}${drawingXml}${docXml.slice(insertionPoint)}`;
+    }
+
+    zip.file(docXmlPath, docXml);
+    const updated = zip.generate({ type: 'nodebuffer' });
+    fs.writeFileSync(docxPath, updated);
+}
+
 async function createFoldersOnly(basePath, folderName, dataExcelPath) {
     if (!basePath || !folderName || !dataExcelPath) {
         throw new Error('basePath, folderName, and dataExcelPath are required.');
@@ -317,6 +933,60 @@ async function updateCalcOnly(basePath, folderName, dataExcelPath) {
     return { root, calcPath };
 }
 
+async function appendCalcImages(basePath, folderName) {
+    if (!basePath || !folderName) {
+        throw new Error('basePath و folderName مطلوبة.');
+    }
+
+    const root = path.join(basePath, folderName);
+    const targetDir = path.join(root, MAIN_FOLDERS[2]);
+    const imagesDir = path.join(targetDir, VALUE_IMAGE_FOLDER);
+    const calcPath = path.join(targetDir, CALC_TARGET_NAME);
+
+    if (!fs.existsSync(calcPath)) {
+        throw new Error(`لم يتم العثور على calc.xlsx في ${calcPath}`);
+    }
+
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.readFile(calcPath);
+
+    const dataSheet = workbook.getWorksheet('data') || workbook.worksheets[0];
+    if (!dataSheet) {
+        throw new Error('شيت data غير موجود داخل calc.xlsx');
+    }
+
+    const mapping = computeSheetNameMap(workbook, dataSheet);
+    await ensureDir(imagesDir);
+    let processed = 0;
+    let skipped = 0;
+    let savedImages = 0;
+
+    for (const entry of mapping) {
+        const { sheetName, colA, colB } = entry;
+        const docxName = `${colA}- ${colB}.docx`;
+        const docxPath = path.join(targetDir, docxName);
+        if (!fs.existsSync(docxPath)) {
+            skipped += 1;
+            continue;
+        }
+
+        const sheet = workbook.getWorksheet(sheetName);
+        if (!sheet) {
+            skipped += 1;
+            continue;
+        }
+
+        const image = renderSheetRangeToPng(sheet, workbook);
+        const imagePath = path.join(imagesDir, `${colA}- ${colB}.png`);
+        await fs.promises.writeFile(imagePath, image.buffer);
+        savedImages += 1;
+        await appendImageToDocx(docxPath, image.buffer, { width: image.width, height: image.height });
+        processed += 1;
+    }
+
+    return { root, targetDir, calcPath, processed, skipped, imagesDir, savedImages };
+}
+
 const valuationHandlers = {
     async handleCreateFolders(event, payload = {}) {
         try {
@@ -349,6 +1019,39 @@ const valuationHandlers = {
         } catch (error) {
             console.error('[MAIN] valuation update calc failed:', error);
             return { ok: false, error: error.message || 'Failed to update calc.xlsx.' };
+        }
+    },
+
+    async handleCreateDocx(event, payload = {}) {
+        try {
+            const { basePath, folderName } = payload;
+            const root = path.join(basePath || '', folderName || '');
+            const calcPath = path.join(root, MAIN_FOLDERS[2], CALC_TARGET_NAME);
+            const result = await createDocxFiles(basePath, folderName, calcPath);
+            return {
+                ok: true,
+                root,
+                calcPath,
+                docsCreated: result.created,
+                targetDir: result.targetDir
+            };
+        } catch (error) {
+            console.error('[MAIN] valuation create docx failed:', error);
+            return { ok: false, error: error.message || 'Failed to create docx files.' };
+        }
+    },
+
+    async handleValueCalculations(event, payload = {}) {
+        try {
+            const { basePath, folderName } = payload;
+            const result = await appendCalcImages(basePath, folderName);
+            return {
+                ok: true,
+                ...result
+            };
+        } catch (error) {
+            console.error('[MAIN] valuation value calculations failed:', error);
+            return { ok: false, error: error.message || 'Failed to append calculations to docx files.' };
         }
     }
 };

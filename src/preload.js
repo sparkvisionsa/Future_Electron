@@ -141,5 +141,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     // Valuation system
     createValuationFolders: (payload) => safeInvoke('valuation-create-folders', payload),
-    updateValuationCalc: (payload) => safeInvoke('valuation-update-calc', payload)
+    updateValuationCalc: (payload) => safeInvoke('valuation-update-calc', payload),
+    createValuationDocx: (payload) => safeInvoke('valuation-create-docx', payload),
+    generateValuationValueCalcs: (payload) => safeInvoke('valuation-value-calcs', payload)
 });
