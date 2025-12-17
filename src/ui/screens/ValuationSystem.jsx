@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { FolderPlus, FileSpreadsheet, RefreshCw, CheckCircle2, AlertTriangle, Loader2, Info, Save, FolderOpen, ListTree, FileText, Calculator } from 'lucide-react';
+import { FolderPlus, FileSpreadsheet, RefreshCw, CheckCircle2, AlertTriangle, Loader2, Info, Save, FolderOpen, ListTree, FileText, Calculator, Images } from 'lucide-react';
 
 const ValuationSystem = () => {
     const [basePath, setBasePath] = useState('');
@@ -10,6 +10,7 @@ const ValuationSystem = () => {
     const [loadingCalc, setLoadingCalc] = useState(false);
     const [loadingDocx, setLoadingDocx] = useState(false);
     const [loadingValueCalcs, setLoadingValueCalcs] = useState(false);
+    const [loadingPreviewImages, setLoadingPreviewImages] = useState(false);
     const [result, setResult] = useState(null);
     const [error, setError] = useState('');
 
@@ -166,6 +167,33 @@ const ValuationSystem = () => {
         }
     };
 
+    const handleAppendPreviewImages = async () => {
+        setError('');
+        setResult(null);
+        if (!basePath || !folderName) {
+            setError('حدد مسار المجلد واسم المجلد أولاً.');
+            return;
+        }
+        if (!window?.electronAPI?.appendValuationPreviewImages) {
+            setError('الميزة غير متوفرة في هذا الإصدار.');
+            return;
+        }
+        setLoadingPreviewImages(true);
+        try {
+            const payload = { basePath, folderName };
+            const res = await window.electronAPI.appendValuationPreviewImages(payload);
+            if (res?.ok) {
+                setResult(res);
+            } else {
+                setError(res?.error || 'تعذر إرفاق الصور داخل الملفات.');
+            }
+        } catch (err) {
+            setError(err?.message || 'تعذر إرفاق الصور داخل الملفات.');
+        } finally {
+            setLoadingPreviewImages(false);
+        }
+    };
+
     return (
         <div className="space-y-6">
             <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-4 flex items-start gap-3">
@@ -288,6 +316,15 @@ const ValuationSystem = () => {
                 </button>
                 <button
                     type="button"
+                    onClick={handleAppendPreviewImages}
+                    disabled={loadingPreviewImages}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-fuchsia-600 text-white text-sm font-semibold hover:bg-fuchsia-700 disabled:opacity-50"
+                >
+                    {loadingPreviewImages ? <Loader2 className="w-4 h-4 animate-spin" /> : <Images className="w-4 h-4" />}
+                    إرفاق صور المعاينة (DOCX)
+                </button>
+                <button
+                    type="button"
                     onClick={resetForm}
                     className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-100 text-gray-800 text-sm font-semibold hover:bg-slate-200"
                 >
@@ -328,6 +365,9 @@ const ValuationSystem = () => {
                         )}
                         {typeof result.processed === 'number' && (
                             <p>تم إدراج صور الحساب في: {result.processed} ملف (تخطي: {result.skipped || 0})</p>
+                        )}
+                        {typeof result.previewProcessed === 'number' && (
+                            <p>تم إدراج صور المعاينة في: {result.previewProcessed} ملف (تخطي: {result.previewSkipped || 0})</p>
                         )}
                         {result.imagesDir && (
                             <p>تم حفظ صور الحسابات في: <span className="font-mono break-all">{result.imagesDir}</span></p>

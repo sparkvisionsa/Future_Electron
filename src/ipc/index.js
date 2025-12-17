@@ -99,6 +99,7 @@ function registerIpcHandlers() {
     ipcMain.handle('valuation-update-calc', valuationHandlers.handleUpdateCalc);
     ipcMain.handle('valuation-create-docx', valuationHandlers.handleCreateDocx);
     ipcMain.handle('valuation-value-calcs', valuationHandlers.handleValueCalculations);
+    ipcMain.handle('valuation-append-preview-images', valuationHandlers.handleAppendPreviewImages);
 
     console.log('[IPC] All handlers registered');
 }
@@ -176,6 +177,7 @@ function unregisterIpcHandlers() {
     ipcMain.removeAllListeners('valuation-update-calc');
     ipcMain.removeAllListeners('valuation-create-docx');
     ipcMain.removeAllListeners('valuation-value-calcs');
+    ipcMain.removeAllListeners('valuation-append-preview-images');
 
     console.log('[IPC] All handlers unregistered');
 }

@@ -3,6 +3,7 @@ import asyncio, traceback, sys
 from datetime import datetime, timezone
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorClient
+from scripts.core.company_context import build_report_create_url, require_selected_company
 from scripts.core.utils import wait_for_element
 from .formSteps import form_steps
 from .formFiller import fill_form
@@ -113,6 +114,12 @@ async def create_report_for_record(browser, record, tabs_num=3):
         if not record or "_id" not in record:
             return {"status": "FAILED", "error": "Invalid record object (missing _id)"}
 
+        try:
+            require_selected_company()
+            create_url = build_report_create_url()
+        except Exception as ctx_err:
+            return {"status": "FAILED", "error": str(ctx_err)}
+
         # Mark start time
         await db.multiapproachreports.update_one(
             {"_id": record["_id"]},
@@ -123,7 +130,7 @@ async def create_report_for_record(browser, record, tabs_num=3):
         record["number_of_macros"] = str(len(record.get("asset_data", [])))
 
         # Open the initial create-report page
-        main_page = await browser.get("https://qima.taqeem.sa/report/create/4/487")
+        main_page = await browser.get(create_url)
         await asyncio.sleep(1)
 
         for step_num, step_config in enumerate(form_steps, 1):

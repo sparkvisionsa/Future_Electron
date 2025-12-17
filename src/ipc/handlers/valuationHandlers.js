@@ -18,6 +18,8 @@ const REPORT_TEMPLATE_PATH = path.resolve(__dirname, '../../../excelfile_calc/re
 const CALC_TARGET_NAME = 'calc.xlsx';
 const VALUE_IMAGE_FOLDER = 'valu calculations';
 const DOCX_MARKER_TEXT = 'مرفق 1: الوصف الجزئي وحسابات القيمة';
+const DOCX_PREVIEW_MARKER_TEXT = 'مرفق 2: الصور الفوتوغرافية';
+const PREVIEW_IMAGES_TABLE_CAPTION = 'TAQEEM_PREVIEW_IMAGES';
 
 const sanitizeName = (name) => {
     if (!name && name !== 0) return '';
@@ -337,6 +339,10 @@ async function copyDataSheet(dataExcelPath, calcPath) {
         targetRow.commit();
     }
 
+    forceRightToLeft(targetSheet, sourceSheet);
+    const templateSheet = calcWorkbook.getWorksheet('calc') || calcWorkbook.worksheets[0];
+    if (templateSheet) forceRightToLeft(templateSheet, templateSheet);
+
     await calcWorkbook.xlsx.writeFile(calcPath);
 }
 
@@ -385,6 +391,22 @@ function cloneSheet(templateSheet, targetSheet) {
             }
         });
     }
+
+    forceRightToLeft(targetSheet, templateSheet);
+}
+
+function forceRightToLeft(sheet, templateSheet) {
+    if (!sheet) return;
+    const baseView = (templateSheet?.views && templateSheet.views[0]) || (sheet.views && sheet.views[0]) || {};
+    const view = {
+        state: baseView.state || 'normal',
+        rightToLeft: true,
+        showGridLines: typeof baseView.showGridLines === 'boolean' ? baseView.showGridLines : true,
+        showRowColHeaders: typeof baseView.showRowColHeaders === 'boolean' ? baseView.showRowColHeaders : true,
+        zoomScale: baseView.zoomScale,
+        zoomScaleNormal: baseView.zoomScaleNormal
+    };
+    sheet.views = [view];
 }
 
 function setDataRefs(sheet, dataRowIndex) {
@@ -457,6 +479,10 @@ async function createCalcSheets(dataExcelPath, calcPath) {
 
     const templateSheet = calcWorkbook.getWorksheet('calc') || calcWorkbook.worksheets[0];
     if (!templateSheet) throw new Error('لم يتم العثور على شيت calc في calc.xlsx');
+    forceRightToLeft(templateSheet, templateSheet);
+
+    const calcDataSheet = calcWorkbook.getWorksheet('data');
+    if (calcDataSheet) forceRightToLeft(calcDataSheet, templateSheet);
 
     // Clear previously generated sheets, keep template and data
     const keepNames = new Set(['calc', 'data']);
@@ -487,7 +513,11 @@ async function createCalcSheets(dataExcelPath, calcPath) {
         const newSheet = calcWorkbook.addWorksheet(sheetName);
         cloneSheet(templateSheet, newSheet);
         setDataRefs(newSheet, r);
+        forceRightToLeft(newSheet, templateSheet);
     }
+
+    // Safety: enforce RTL on every sheet
+    calcWorkbook.worksheets.forEach((ws) => forceRightToLeft(ws, templateSheet));
 
     await calcWorkbook.xlsx.writeFile(calcPath);
 }
@@ -564,6 +594,11 @@ function renderSheetRangeToPng(sheet, workbook) {
     const rows = 8;
     const cols = 14; // A..N
     const padding = 8;
+    const isRtlSheet = Boolean(sheet?.views?.[0]?.rightToLeft);
+    const CURRENCY_TEXT_LATIN_DOTS = 'ر.س.';
+    // Use Arabic full stop "۔" inside PNG rendering to avoid bidi flipping dots to the front (".ر.س")
+    const CURRENCY_TEXT_ARABIC_DOTS = `ر\u06D4س\u06D4`;
+    const currencyRegex = /ر[.\u06D4]\s*س[.\u06D4]/u;
     const colWidths = [];
     for (let c = 1; c <= cols; c++) {
         const w = sheet.getColumn(c)?.width;
@@ -585,7 +620,7 @@ function renderSheetRangeToPng(sheet, workbook) {
             const cell = sheet.getCell(r, c);
             const text = getCellDisplay(cell, workbook, sheet);
             if (!text) continue;
-            const hasArabic = /[\u0600-\u06FF]/.test(text);
+            const isCurrencyText = currencyRegex.test(text) && /[0-9]/.test(text);
             const isBold = cell?.style?.font?.bold || r === 1 || r === 5;
             const baseFontSize = 13;
             const headerFontSize = 14;
@@ -593,7 +628,14 @@ function renderSheetRangeToPng(sheet, workbook) {
             const fontFamily = '"DejaVu Sans","Noto Naskh Arabic","Arial Unicode MS","Segoe UI","Arial","Tahoma",sans-serif';
             measureCtx.font = `${isBold ? 'bold ' : '600 '} ${fontSize}px ${fontFamily}`;
             const maxTextWidth = Math.max(20, colWidths[c - 1] - padding * 2);
-            const textWidth = measureCtx.measureText(text).width;
+            const textWidth = (() => {
+                if (!isCurrencyText) return measureCtx.measureText(text).width;
+                const number = String(text).replace(/\s*ر[.\u06D4]\s*س[.\u06D4]\s*/gu, '').trim();
+                const numWidth = measureCtx.measureText(number).width;
+                const spaceWidth = measureCtx.measureText(' ').width;
+                const curWidth = measureCtx.measureText(CURRENCY_TEXT_ARABIC_DOTS).width;
+                return numWidth + spaceWidth + curWidth;
+            })();
             const lines = Math.max(1, Math.ceil(textWidth / maxTextWidth));
             const heightNeeded = lines * fontSize * 1.3 + padding * 2;
             rowHeights[r - 1] = Math.max(rowHeights[r - 1], heightNeeded);
@@ -637,23 +679,28 @@ function renderSheetRangeToPng(sheet, workbook) {
         const bottom = endCell.row;
         const right = endCell.col;
         if (top > rows || left > cols || bottom < 1 || right < 1) return;
-        mergeMap.set(`${top}-${left}`, { top, left, bottom, right });
+        const anchorCol = isRtlSheet ? right : left;
+        mergeMap.set(`${top}-${anchorCol}`, { top, left, bottom, right, anchorCol });
     });
 
     const isCoveredByMerge = (r, c) => {
         for (const merge of mergeMap.values()) {
             if (r >= merge.top && r <= merge.bottom && c >= merge.left && c <= merge.right) {
-                if (merge.top !== r || merge.left !== c) return true;
+                if (merge.top !== r || merge.anchorCol !== c) return true;
             }
         }
         return false;
     };
 
+    const colOrder = isRtlSheet
+        ? Array.from({ length: cols }, (_v, idx) => cols - idx)
+        : Array.from({ length: cols }, (_v, idx) => idx + 1);
+
     let y = 1;
     for (let r = 1; r <= rows; r++) {
         let x = 1;
         const rowHeight = rowHeights[r - 1];
-        for (let c = 1; c <= cols; c++) {
+        for (const c of colOrder) {
             if (isCoveredByMerge(r, c)) {
                 x += colWidths[c - 1];
                 continue;
@@ -662,10 +709,12 @@ function renderSheetRangeToPng(sheet, workbook) {
             const merge = mergeMap.get(`${r}-${c}`);
             const spanCols = merge ? merge.right - merge.left + 1 : 1;
             const spanRows = merge ? merge.bottom - merge.top + 1 : 1;
-            const cellWidth = colWidths.slice(c - 1, c - 1 + spanCols).reduce((a, b) => a + b, 0);
+            const left = merge ? merge.left : c;
+            const right = merge ? merge.right : c;
+            const cellWidth = colWidths.slice(left - 1, right).reduce((a, b) => a + b, 0);
             const cellHeight = rowHeights.slice(r - 1, r - 1 + spanRows).reduce((a, b) => a + b, 0);
 
-            const cell = sheet.getCell(r, c);
+            const cell = merge ? sheet.getCell(merge.top, merge.left) : sheet.getCell(r, c);
             const fill = cell?.style?.fill;
             if (fill?.fgColor?.argb) {
                 const rgba = argbToRgba(fill.fgColor.argb);
@@ -680,7 +729,8 @@ function renderSheetRangeToPng(sheet, workbook) {
             const text = getCellDisplay(cell, workbook, sheet);
             ctx.save();
             const hasArabic = /[\u0600-\u06FF]/.test(text);
-            const align = cell?.style?.alignment?.horizontal || (hasArabic ? 'right' : 'center');
+            const isCurrencyText = currencyRegex.test(text) && /[0-9]/.test(text);
+            const align = cell?.style?.alignment?.horizontal || (hasArabic || isRtlSheet ? 'right' : 'center');
             ctx.textAlign = align === 'right' ? 'right' : align === 'left' ? 'left' : 'center';
             ctx.direction = hasArabic ? 'rtl' : 'ltr';
             const isBold = cell?.style?.font?.bold || r === 1 || r === 5;
@@ -712,17 +762,49 @@ function renderSheetRangeToPng(sheet, workbook) {
                 return lines;
             };
 
-            const lines = wrapText(text);
             const lineHeight = fontSize * 1.3;
-            const blockHeight = lines.length * lineHeight;
             let textX = x + padding;
             if (ctx.textAlign === 'center') textX = x + cellWidth / 2;
             if (ctx.textAlign === 'right') textX = x + cellWidth - padding;
-            const startY = y + (cellHeight - blockHeight) / 2 + fontSize;
-            lines.forEach((line, idx) => {
-                const lineY = startY + idx * lineHeight;
-                ctx.fillText(line, textX, lineY);
-            });
+
+            // Draw currency as 2 parts to keep visual order and punctuation stable: "25,220 ر.س."
+            if (isCurrencyText && (ctx.textAlign === 'right' || ctx.textAlign === 'center')) {
+                const number = String(text).replace(/\s*ر[.\u06D4]\s*س[.\u06D4]\s*/gu, '').trim();
+                const currency = CURRENCY_TEXT_ARABIC_DOTS;
+                const numWidth = ctx.measureText(number).width;
+                const spaceWidth = ctx.measureText(' ').width;
+                const curWidth = ctx.measureText(currency).width;
+                const totalWidth = numWidth + spaceWidth + curWidth;
+
+                const anchorRight = ctx.textAlign === 'right'
+                    ? (x + cellWidth - padding)
+                    : (x + cellWidth / 2 + totalWidth / 2);
+
+                const yLine = y + (cellHeight - lineHeight) / 2 + fontSize;
+
+                ctx.save();
+                ctx.textAlign = 'right';
+                ctx.direction = 'ltr';
+                ctx.fillText(number, anchorRight, yLine);
+                ctx.restore();
+
+                ctx.save();
+                ctx.textAlign = 'right';
+                ctx.direction = 'rtl';
+                ctx.fillText(currency, anchorRight - numWidth - spaceWidth, yLine);
+                ctx.restore();
+            } else {
+                const normalizedText = isCurrencyText
+                    ? String(text).replace(CURRENCY_TEXT_LATIN_DOTS, CURRENCY_TEXT_ARABIC_DOTS)
+                    : text;
+                const lines = wrapText(normalizedText);
+                const blockHeight = lines.length * lineHeight;
+                const startY = y + (cellHeight - blockHeight) / 2 + fontSize;
+                lines.forEach((line, idx) => {
+                    const lineY = startY + idx * lineHeight;
+                    ctx.fillText(line, textX, lineY);
+                });
+            }
             ctx.restore();
 
             x += colWidths[c - 1];
@@ -781,13 +863,13 @@ function appendImageToDocx(docxPath, imageBuffer, size, markerText = DOCX_MARKER
     zip.file(`word/media/${imageName}`, imageBuffer);
 
     // Insert drawing into document body (after marker paragraph if found, otherwise appended)
-    const targetWidthPx = 850; // wider image
+    const targetWidthPx = 880; // wider image
     const targetHeightPx = 250; // height unchanged
     const cx = Math.round(targetWidthPx * 9525); // px to EMU
     const cy = Math.round(targetHeightPx * 9525);
-    const leftIndentTwips = 1400; // more left margin
+    const leftIndentTwips = 1600; // more left margin
     const rightIndentTwips = 50; // keep small right indent
-    const spacingBeforeTwips = 250; // slight spacing above
+    const spacingBeforeTwips = 550; // slight spacing above
     const drawingXml = `
       <w:p>
         <w:pPr>
@@ -876,6 +958,284 @@ function appendImageToDocx(docxPath, imageBuffer, size, markerText = DOCX_MARKER
     zip.file(docXmlPath, docXml);
     const updated = zip.generate({ type: 'nodebuffer' });
     fs.writeFileSync(docxPath, updated);
+}
+
+function findInsertionPointAfterSheetImage(docXml) {
+    const idx = docXml.lastIndexOf('name="SheetImage"');
+    if (idx === -1) return -1;
+    const paraStart = docXml.lastIndexOf('<w:p', idx);
+    const paraEnd = docXml.indexOf('</w:p>', idx);
+    if (paraStart >= 0 && paraEnd > paraStart) return paraEnd + '</w:p>'.length;
+    return -1;
+}
+
+function removeExistingPreviewImagesTable(docXml) {
+    const captionIdx = docXml.indexOf(`w:tblCaption w:val="${PREVIEW_IMAGES_TABLE_CAPTION}"`);
+    if (captionIdx === -1) return docXml;
+    const tblStart = docXml.lastIndexOf('<w:tbl', captionIdx);
+    const tblEnd = docXml.indexOf('</w:tbl>', captionIdx);
+    if (tblStart === -1 || tblEnd === -1) return docXml;
+    return `${docXml.slice(0, tblStart)}${docXml.slice(tblEnd + '</w:tbl>'.length)}`;
+}
+
+function appendPreviewImagesToDocx(docxPath, imagePaths, opts = {}) {
+    const {
+        markerText = DOCX_PREVIEW_MARKER_TEXT,
+        imagesPerRow = 3,
+        imageWidthPx = 210,
+        imageHeightPx = 140,
+        tableIndentTwips = 2200,
+        rightIndentTwips = 80
+    } = opts;
+
+    if (!Array.isArray(imagePaths) || imagePaths.length === 0) return { appended: 0 };
+
+    const docXmlPath = 'word/document.xml';
+    const relsPath = 'word/_rels/document.xml.rels';
+
+    const content = fs.readFileSync(docxPath);
+    const zip = new PizZip(content);
+    const docFile = zip.file(docXmlPath);
+    if (!docFile) throw new Error('document.xml غير موجود داخل التقرير.');
+
+    let docXml = docFile.asText();
+    docXml = removeExistingPreviewImagesTable(docXml);
+
+    let relsXml = zip.file(relsPath)?.asText();
+    if (!relsXml) {
+        relsXml = '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
+    }
+
+    const existingIds = Array.from(relsXml.matchAll(/Id="rId(\d+)"/g)).map((m) => Number(m[1]));
+    let nextRel = (existingIds.length ? Math.max(...existingIds) : 0) + 1;
+
+    const pxToEmu = (px) => Math.round(px * 9525);
+    const cx = pxToEmu(imageWidthPx);
+    const cy = pxToEmu(imageHeightPx);
+
+    const rows = [];
+    const addedRels = [];
+    for (let i = 0; i < imagePaths.length; i++) {
+        const imagePath = imagePaths[i];
+        const buf = fs.readFileSync(imagePath);
+        const ext = (path.extname(imagePath) || '.png').toLowerCase();
+        const imageName = `preview_${Date.now()}_${i}${ext}`;
+        const relId = `rId${nextRel++}`;
+        addedRels.push({ relId, imageName });
+
+        zip.file(`word/media/${imageName}`, buf);
+        const relTag = `<Relationship Id="${relId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${imageName}"/>`;
+        relsXml = relsXml.replace('</Relationships>', `${relTag}</Relationships>`);
+
+        rows.push({ relId, imageName });
+    }
+
+    zip.file(relsPath, relsXml);
+
+    const makeDrawing = (relId, docPrId) => `
+      <w:p>
+        <w:pPr>
+          <w:jc w:val="right"/>
+        </w:pPr>
+        <w:r>
+          <w:drawing>
+            <wp:inline distT="0" distB="0" distL="0" distR="0" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">
+              <wp:extent cx="${cx}" cy="${cy}"/>
+              <wp:docPr id="${docPrId}" name="PreviewImage"/>
+              <a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+                <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                  <pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                    <pic:nvPicPr>
+                      <pic:cNvPr id="0" name="preview"/>
+                      <pic:cNvPicPr/>
+                    </pic:nvPicPr>
+                    <pic:blipFill>
+                      <a:blip r:embed="${relId}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>
+                      <a:stretch><a:fillRect/></a:stretch>
+                    </pic:blipFill>
+                    <pic:spPr>
+                      <a:xfrm>
+                        <a:off x="0" y="0"/>
+                        <a:ext cx="${cx}" cy="${cy}"/>
+                      </a:xfrm>
+                      <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+                    </pic:spPr>
+                  </pic:pic>
+                </a:graphicData>
+              </a:graphic>
+            </wp:inline>
+          </w:drawing>
+        </w:r>
+      </w:p>
+    `;
+
+    const makeCell = (drawingXml) => `
+      <w:tc>
+        <w:tcPr>
+          <w:tcW w:w="0" w:type="auto"/>
+          <w:vAlign w:val="center"/>
+        </w:tcPr>
+        ${drawingXml}
+      </w:tc>
+    `;
+
+    const tableRows = [];
+    const docPrStart = Date.now() % 100000;
+    for (let i = 0; i < rows.length; i += imagesPerRow) {
+        const chunk = rows.slice(i, i + imagesPerRow);
+        const cells = chunk.map((img, idx) => makeCell(makeDrawing(img.relId, docPrStart + i + idx))).join('');
+        const paddingCells = Array.from({ length: Math.max(0, imagesPerRow - chunk.length) }, () => makeCell('<w:p/>')).join('');
+        tableRows.push(`<w:tr>${cells}${paddingCells}</w:tr>`);
+    }
+
+    const galleryXml = `
+      <w:p>
+        <w:pPr>
+          <w:ind w:left="${tableIndentTwips}" w:right="${rightIndentTwips}"/>
+          <w:spacing w:before="250" w:after="150"/>
+          <w:jc w:val="right"/>
+        </w:pPr>
+      </w:p>
+      <w:tbl>
+        <w:tblPr>
+          <w:tblW w:w="0" w:type="auto"/>
+          <w:jc w:val="right"/>
+          <w:tblInd w:w="${tableIndentTwips}" w:type="dxa"/>
+          <w:tblCaption w:val="${PREVIEW_IMAGES_TABLE_CAPTION}"/>
+        </w:tblPr>
+        <w:tblGrid>
+          ${Array.from({ length: imagesPerRow }, () => '<w:gridCol w:w="0"/>').join('')}
+        </w:tblGrid>
+        ${tableRows.join('')}
+      </w:tbl>
+    `;
+
+    let insertionPoint = -1;
+    if (markerText) {
+        // Insert after the paragraph that contains the marker text (use last occurrence).
+        const paragraphs = docXml.match(/<w:p[\s\S]*?<\/w:p>/g) || [];
+        let lastMatchStart = -1;
+        let lastMatchLength = 0;
+        for (const p of paragraphs) {
+            const plain = p.replace(/<[^>]+>/g, '');
+            if (plain.includes(markerText)) {
+                const paraStart = docXml.indexOf(p, lastMatchStart + 1);
+                if (paraStart !== -1) {
+                    lastMatchStart = paraStart;
+                    lastMatchLength = p.length;
+                }
+            }
+        }
+        if (lastMatchStart !== -1) insertionPoint = lastMatchStart + lastMatchLength;
+        if (insertionPoint === -1 && docXml.includes(markerText)) {
+            const markerIdx = docXml.lastIndexOf(markerText);
+            const paraStart = docXml.lastIndexOf('<w:p', markerIdx);
+            const paraEnd = docXml.indexOf('</w:p>', markerIdx);
+            if (paraStart >= 0 && paraEnd > paraStart) insertionPoint = paraEnd + '</w:p>'.length;
+        }
+    }
+    // Fallback: append after "SheetImage" if present
+    if (insertionPoint === -1) insertionPoint = findInsertionPointAfterSheetImage(docXml);
+    if (insertionPoint === -1) {
+        insertionPoint = docXml.includes('</w:body>') ? docXml.lastIndexOf('</w:body>') : docXml.length;
+    }
+
+    docXml = `${docXml.slice(0, insertionPoint)}${galleryXml}${docXml.slice(insertionPoint)}`;
+    zip.file(docXmlPath, docXml);
+    const updated = zip.generate({ type: 'nodebuffer' });
+    fs.writeFileSync(docxPath, updated);
+    return { appended: imagePaths.length };
+}
+
+function isImageFile(fileName) {
+    const ext = (path.extname(fileName) || '').toLowerCase();
+    return ['.png', '.jpg', '.jpeg', '.webp', '.bmp'].includes(ext);
+}
+
+async function collectImageFilesRecursive(dirPath, maxFiles = 50) {
+    const out = [];
+    const visit = async (p) => {
+        if (out.length >= maxFiles) return;
+        let entries = [];
+        try {
+            entries = await fs.promises.readdir(p, { withFileTypes: true });
+        } catch (_) {
+            return;
+        }
+        for (const ent of entries) {
+            if (out.length >= maxFiles) break;
+            const full = path.join(p, ent.name);
+            if (ent.isDirectory()) {
+                await visit(full);
+            } else if (ent.isFile() && isImageFile(ent.name)) {
+                out.push(full);
+            }
+        }
+    };
+    await visit(dirPath);
+    out.sort((a, b) => path.basename(a).localeCompare(path.basename(b), 'en', { numeric: true, sensitivity: 'base' }));
+    return out;
+}
+
+function normalizeKey(name) {
+    return sanitizeName(String(name || '')).replace(/\s+/g, ' ').trim();
+}
+
+async function appendPreviewImages(basePath, folderName) {
+    const root = path.join(basePath, folderName);
+    const previewRoot = path.join(root, MAIN_FOLDERS[1]);
+    const targetDir = path.join(root, MAIN_FOLDERS[2]);
+
+    if (!fs.existsSync(previewRoot)) throw new Error(`لم يتم العثور على مجلد صور المعاينة: ${previewRoot}`);
+    if (!fs.existsSync(targetDir)) throw new Error(`لم يتم العثور على مجلد ملفات DOCX: ${targetDir}`);
+
+    const docxFiles = (await fs.promises.readdir(targetDir))
+        .filter((f) => f.toLowerCase().endsWith('.docx'));
+
+    const imageFolders = [];
+    const locationDirs = await fs.promises.readdir(previewRoot, { withFileTypes: true });
+    for (const loc of locationDirs) {
+        if (!loc.isDirectory()) continue;
+        const locPath = path.join(previewRoot, loc.name);
+        let assetDirs = [];
+        try {
+            assetDirs = await fs.promises.readdir(locPath, { withFileTypes: true });
+        } catch (_) {
+            continue;
+        }
+        for (const asset of assetDirs) {
+            if (!asset.isDirectory()) continue;
+            imageFolders.push(path.join(locPath, asset.name));
+        }
+    }
+
+    const folderImagesMap = new Map();
+    for (const folderPath of imageFolders) {
+        const key = normalizeKey(path.basename(folderPath));
+        if (!key) continue;
+        const imgs = await collectImageFilesRecursive(folderPath, 60);
+        if (!imgs.length) continue;
+        folderImagesMap.set(key, imgs);
+    }
+
+    let previewProcessed = 0;
+    let previewSkipped = 0;
+    let previewImagesAppended = 0;
+
+    for (const docxFile of docxFiles) {
+        const docBase = normalizeKey(path.basename(docxFile, '.docx'));
+        const images = folderImagesMap.get(docBase);
+        if (!images || !images.length) {
+            previewSkipped += 1;
+            continue;
+        }
+        const docxPath = path.join(targetDir, docxFile);
+        appendPreviewImagesToDocx(docxPath, images);
+        previewProcessed += 1;
+        previewImagesAppended += images.length;
+    }
+
+    return { root, previewRoot, targetDir, previewProcessed, previewSkipped, previewImagesAppended };
 }
 
 async function createFoldersOnly(basePath, folderName, dataExcelPath) {
@@ -1052,6 +1412,20 @@ const valuationHandlers = {
         } catch (error) {
             console.error('[MAIN] valuation value calculations failed:', error);
             return { ok: false, error: error.message || 'Failed to append calculations to docx files.' };
+        }
+    },
+
+    async handleAppendPreviewImages(event, payload = {}) {
+        try {
+            const { basePath, folderName } = payload;
+            const result = await appendPreviewImages(basePath, folderName);
+            return {
+                ok: true,
+                ...result
+            };
+        } catch (error) {
+            console.error('[MAIN] valuation append preview images failed:', error);
+            return { ok: false, error: error.message || 'Failed to append preview images to docx files.' };
         }
     }
 };
