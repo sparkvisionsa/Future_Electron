@@ -4,12 +4,14 @@ import ExcelJS from "exceljs/dist/exceljs.min.js";
 import { uploadElrajhiBatch, fetchElrajhiBatches, fetchElrajhiBatchReports } from "../../api/report";
 import httpClient from "../../api/httpClient";
 import { useElrajhiUpload } from "../context/ElrajhiUploadContext";
+import EditReportModal from "../components/EditReportModal";
 
 import {
     FileSpreadsheet,
     Files,
     Loader2,
     Upload,
+    Edit2,
     CheckCircle2,
     AlertTriangle,
     Table,
@@ -437,8 +439,23 @@ const UploadReportElrajhi = () => {
         setLoadingValuers,
     } = useElrajhiUpload();
 
+    const refreshAfterEdit = async (batchId) => {
+        if (batchId) {
+            await loadBatchReports(batchId);
+            await loadBatchList();
+
+            setBatchMessage({
+                type: "success",
+                text: "Report updated successfully!"
+            });
+        }
+    };
+
+
     const [downloadingExcel, setDownloadingExcel] = useState(false);
     const [savingValidation, setSavingValidation] = useState(false);
+    const [editingReport, setEditingReport] = useState(null);
+    const [isEditModalOpen, setIsEditModalOpen] = useState(false);
     const [downloadingValidationExcel, setDownloadingValidationExcel] = useState(false);
     const [sendToConfirmerMain, setSendToConfirmerMain] = useState(false);
     const [sendToConfirmerValidation, setSendToConfirmerValidation] = useState(false);
@@ -593,6 +610,21 @@ const UploadReportElrajhi = () => {
             setValidationMessage({ type: "info", text: "PDF operation stopped" });
         } catch (err) {
             setValidationMessage({ type: "error", text: "Failed to stop PDF operation" });
+        }
+    };
+
+    const handleEditReport = async (updatedData) => {
+        // Implement your API call to update the report
+        console.log("Updating report:", editingReport, "with data:", updatedData);
+
+        // Example API call:
+        try {
+            // await updateReportApi(editingReport.report_id, updatedData);
+            // Refresh the reports
+            await loadBatchReports(editingReport.batchId);
+            await loadBatchList();
+        } catch (error) {
+            throw new Error("Failed to update report");
         }
     };
 
@@ -3049,6 +3081,7 @@ const UploadReportElrajhi = () => {
                                                                                         <td className="px-3 py-2 text-gray-800">{report.client_name || "—"}</td>
                                                                                         <td className="px-3 py-2 text-gray-800">{report.asset_name || "—"}</td>
                                                                                         <td className="px-3 py-2">
+                                                                                            {/* Status display remains the same */}
                                                                                             {status === "COMPLETE" ? (
                                                                                                 <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-1 text-emerald-700 border border-emerald-100 text-xs">
                                                                                                     <CheckCircle2 className="w-3 h-3" />
@@ -3059,7 +3092,6 @@ const UploadReportElrajhi = () => {
                                                                                                     <Trash2 className="w-3 h-3" />
                                                                                                     Deleted
                                                                                                 </span>)
-
                                                                                                 : status === "SENT" ? (
                                                                                                     <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-1 text-blue-700 border border-blue-100 text-xs">
                                                                                                         <Send className="w-3 h-3" />
@@ -3084,12 +3116,29 @@ const UploadReportElrajhi = () => {
                                                                                                     )}
                                                                                         </td>
                                                                                         <td className="px-3 py-2">
-                                                                                            <input
-                                                                                                type="checkbox"
-                                                                                                className="h-4 w-4"
-                                                                                                checked={isSelected(batch.batchId, reportId)}
-                                                                                                onChange={(e) => toggleReportSelection(batch.batchId, reportId, e.target.checked)}
-                                                                                            />
+                                                                                            <div className="flex items-center gap-2">
+                                                                                                <input
+                                                                                                    type="checkbox"
+                                                                                                    className="h-4 w-4"
+                                                                                                    checked={isSelected(batch.batchId, reportId)}
+                                                                                                    onChange={(e) => toggleReportSelection(batch.batchId, reportId, e.target.checked)}
+                                                                                                />
+                                                                                                <button
+                                                                                                    type="button"
+                                                                                                    onClick={() => {
+                                                                                                        setEditingReport({
+                                                                                                            ...report,
+                                                                                                            batchId: batch.batchId
+                                                                                                        });
+                                                                                                        setIsEditModalOpen(true);
+                                                                                                    }}
+                                                                                                    className="inline-flex items-center gap-1 px-2 py-1.5 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md border border-gray-300 transition-colors"
+                                                                                                    title="Edit report"
+                                                                                                >
+                                                                                                    <Edit2 className="w-3 h-3" />
+                                                                                                    Edit
+                                                                                                </button>
+                                                                                            </div>
                                                                                         </td>
                                                                                     </tr>
                                                                                 );
@@ -3162,6 +3211,19 @@ const UploadReportElrajhi = () => {
                     </div>
                 )}
             </div>
+            <EditReportModal
+                report={editingReport}
+                isOpen={isEditModalOpen}
+                onClose={() => setIsEditModalOpen(false)}
+                onSave={(updatedReport) => {
+                    setEditingReport(null);
+                    setIsEditModalOpen(false);
+                    if (updatedReport.report_id) {
+                        setSelectedReports(new Set([updatedReport.report_id]));
+                    }
+                }}
+                refreshData={refreshAfterEdit}
+            />
         </div>
     );
 

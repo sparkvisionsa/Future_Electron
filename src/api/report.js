@@ -5,6 +5,11 @@ const uploadAssetDataToDatabase = async (reportId, reportData) => {
     return await httpClient.post(url, { reportId, reportData });
 };
 
+const updateUrgentReport = async (reportId, reportData) => {
+    const url = `/report/updateUrgentReport`;
+    return await httpClient.put(url, { reportId, reportData });
+};
+
 const reportExistenceCheck = async (reportId) => {
     const url = `/report/reportExistenceCheck/${reportId}`;
     return await httpClient.get(url);
@@ -101,6 +106,7 @@ module.exports = {
     multiExcelUpload,
     fetchLatestUserReport,
     createDuplicateReport,
+    updateUrgentReport,
     fetchElrajhiBatches,
     fetchElrajhiBatchReports
 };
