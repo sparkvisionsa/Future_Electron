@@ -5,10 +5,20 @@ const uploadAssetDataToDatabase = async (reportId, reportData) => {
     return await httpClient.post(url, { reportId, reportData });
 };
 
-const updateUrgentReport = async (reportId, reportData) => {
-    const url = `/report/updateUrgentReport`;
-    return await httpClient.put(url, { reportId, reportData });
+const updateUrgentReport = async (id, reportData) => {
+    const url = `/elrajhi-upload/reports/${id}`;
+
+    try {
+        const res = await httpClient.put(url, {
+            updatedData: reportData,
+        });
+
+        return res.data; // { status, message?, report }
+    } catch (err) {
+        throw err?.response?.data || err;
+    }
 };
+
 
 const reportExistenceCheck = async (reportId) => {
     const url = `/report/reportExistenceCheck/${reportId}`;

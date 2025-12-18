@@ -647,13 +647,19 @@ async def ElrajhiRetry(browser, batch_id, tabs_num=3, pdf_only=False, company_ur
             if not rec.get("report_id") or len(rec.get("report_id")) < 7
         ]
 
+        edited_reports = [
+            r for r in report_records
+            if r.get("report_id") and len(r.get("report_id")) >= 7 and r.get("report_status") == "EDITED"
+        ]
+
         if pdf_only:
             incomplete_records = [r for r in incomplete_records if not is_dummy_pdf(r)]
             non_created_records = [r for r in non_created_records if not is_dummy_pdf(r)]
 
         total_incomplete = len(incomplete_records)
         total_non_created = len(non_created_records)
-        total_records = total_incomplete + total_non_created
+        total_edited = len(edited_reports)
+        total_records = total_incomplete + total_non_created + total_edited
 
         if total_records == 0:
             return {
@@ -712,6 +718,30 @@ async def ElrajhiRetry(browser, batch_id, tabs_num=3, pdf_only=False, company_ur
             process_id,
             message=f"Starting retry: {total_incomplete} incomplete, {total_non_created} non-created"
         )
+
+        for report_record in edited_reports:
+            action = await check_and_wait(process_id)
+            if action == "stop":
+                clear_process(process_id)
+                return {"status": "STOPPED"}
+
+            emit_progress(
+                process_id,
+                current_item=str(report_record["_id"]),
+                message="Editing report"
+            )
+
+            result = await edit_report(main_page, report_record)
+
+            if result.get("status") == "SUCCESS":
+                macros_to_fill.append({
+                    "macro_id": result["macro_id"],
+                    "macro_data": result["macro_data"],
+                    "report_id": result["report_id"],
+                    "record_id": result["record_id"]
+                })
+            else:
+                log(f"[EDIT FAILED] {result}", "ERROR")
 
         # ===== PHASE 1: Process incomplete records =====
         for idx, report_record in enumerate(incomplete_records):
@@ -1152,7 +1182,13 @@ async def ElrajhiRetryByReportIds(
             if not r.get("report_id") or len(r.get("report_id", "")) < 7
         ]
 
-        total_records = len(incomplete_records) + len(non_created_records)
+        edited_reports = [
+            r for r in report_records
+            if r.get("report_id") and len(r.get("report_id", "")) >= 7
+            and r.get("report_status") == "EDITED"
+        ]
+
+        total_records = len(incomplete_records) + len(non_created_records) + len(edited_reports)
         if total_records == 0:
             return {
                 "status": "SUCCESS",
@@ -1199,6 +1235,34 @@ async def ElrajhiRetryByReportIds(
             process_id,
             message=f"Starting retry for {total_records} reports"
         )
+        # ---- PHASE 0: EDITED REPORTS ----
+            
+        for report_record in edited_reports:
+            action = await check_and_wait(process_id)
+            if action == "stop":
+                clear_process(process_id)
+                return {"status": "STOPPED"}
+
+            emit_progress(
+                process_id,
+                current_item=str(report_record["_id"]),
+                message="Editing report"
+            )
+
+            result = await edit_report(main_page, report_record)
+
+            if result.get("status") == "SUCCESS":
+                macros_to_fill.append({
+                    "macro_id": result["macro_id"],
+                    "macro_data": result["macro_data"],
+                    "report_id": result["report_id"],
+                    "record_id": result["record_id"]
+                })
+            else:
+                log(f"[EDIT FAILED] {result}", "ERROR")
+
+
+
 
         # ---- PHASE 1: INCOMPLETE REPORTS ----
         for rec in incomplete_records:
@@ -1432,3 +1496,97 @@ async def stop_batch(batch_id):
         }
     except Exception as e:
         return {"status": "FAILED", "error": str(e)}
+    
+
+async def edit_report(page, report_record):
+    try:
+        report_id = report_record.get("report_id")
+        if not report_id:
+            raise Exception("Missing report_id in record")
+
+        # 1. Go to edit URL
+        edit_url = f"https://qima.taqeem.sa/report/{report_id}/edit"
+        await page.get(edit_url)
+        await asyncio.sleep(2)
+
+        # 2. Run ONLY form step 1
+        step1 = form_steps[0]
+        result = await fill_form(
+            page,
+            report_record,
+            step1["field_map"],
+            step1["field_types"],
+            is_last_step=True
+        )
+
+        if isinstance(result, dict) and result.get("status") == "FAILED":
+            raise Exception(result.get("error"))
+
+        # 3. Check macro table
+        await wait_for_table_rows(page, timeout=10)
+        macro_link = await wait_for_element(
+            page,
+            "#m-table tbody tr:first-child td:nth-child(1) a",
+            timeout=5
+        )
+
+        if macro_link:
+            macro_id = macro_link.text.strip()
+            log(f"[EDIT] Existing macro found: {macro_id}", "INFO")
+        else:
+            log(f"[EDIT] No macro found, creating one for {report_id}", "INFO")
+
+            from .createMacros import run_create_assets
+            macro_data = extract_asset_from_report(report_record)
+
+            create_res = await run_create_assets(
+                browser=page.browser,
+                report_id=report_id,
+                macro_count=1,
+                tabs_num=1,
+                batch_size=1,
+                macro_data=macro_data
+            )
+
+            if create_res.get("status") == "FAILED":
+                raise Exception(create_res.get("error"))
+
+            await page.get(f"https://qima.taqeem.sa/report/{report_id}")
+            await asyncio.sleep(2)
+            await wait_for_table_rows(page)
+
+            macro_link = await wait_for_element(
+                page,
+                "#m-table tbody tr:first-child td:nth-child(1) a"
+            )
+            if not macro_link:
+                raise Exception("Macro creation succeeded but macro not found")
+
+            macro_id = macro_link.text.strip()
+
+        # 4. Update DB state
+        await db.urgentreports.update_one(
+            {"_id": report_record["_id"]},
+            {
+                "$set": {
+                    "submit_state": 1,
+                    "report_status": "COMPLETE",
+                    "updatedAt": datetime.now(timezone.utc)
+                }
+            }
+        )
+
+        return {
+            "status": "SUCCESS",
+            "report_id": report_id,
+            "macro_id": macro_id,
+            "macro_data": extract_asset_from_report(report_record),
+            "record_id": str(report_record["_id"])
+        }
+
+    except Exception as e:
+        return {
+            "status": "FAILED",
+            "error": str(e),
+            "record_id": str(report_record.get("_id"))
+        }
