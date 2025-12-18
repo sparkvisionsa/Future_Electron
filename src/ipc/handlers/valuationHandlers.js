@@ -1,8 +1,18 @@
 const fs = require('fs');
 const path = require('path');
+const { pathToFileURL } = require('url');
 const ExcelJS = require('exceljs');
 const { createCanvas, loadImage } = require('@napi-rs/canvas');
 const PizZip = require('pizzip');
+let BrowserWindow;
+let electronApp;
+try {
+    // Only available in Electron main process
+    ({ BrowserWindow, app: electronApp } = require('electron'));
+} catch (_) {
+    BrowserWindow = null;
+    electronApp = null;
+}
 
 const MAIN_FOLDERS = [
     '1.ملفات العميل',
@@ -20,6 +30,8 @@ const VALUE_IMAGE_FOLDER = 'valu calculations';
 const DOCX_MARKER_TEXT = 'مرفق 1: الوصف الجزئي وحسابات القيمة';
 const DOCX_PREVIEW_MARKER_TEXT = 'مرفق 2: الصور الفوتوغرافية';
 const PREVIEW_IMAGES_TABLE_CAPTION = 'TAQEEM_PREVIEW_IMAGES';
+const REG_CERT_FOLDER_NAME = 'شهادات التسجيل';
+const DOCX_REG_CERT_MARKER_TEXT = 'مرفق 3: شهادة التسجيل في بوابة الخدمات الإلكترونية للهيئة السعودية للمقيمين المعتمدين "تقييم"';
 
 const sanitizeName = (name) => {
     if (!name && name !== 0) return '';
@@ -978,12 +990,35 @@ function removeExistingPreviewImagesTable(docXml) {
     return `${docXml.slice(0, tblStart)}${docXml.slice(tblEnd + '</w:tbl>'.length)}`;
 }
 
-function appendPreviewImagesToDocx(docxPath, imagePaths, opts = {}) {
+function removeParagraphsContaining(docXml, needle) {
+    if (!needle) return docXml;
+    const paras = docXml.match(/<w:p[\s\S]*?<\/w:p>/g) || [];
+    let out = docXml;
+    for (const p of paras) {
+        if (!p.includes(needle)) continue;
+        out = out.replace(p, '');
+    }
+    return out;
+}
+
+function computeContainSize(imgWidth, imgHeight, maxWidth, maxHeight) {
+    if (!imgWidth || !imgHeight || !maxWidth || !maxHeight) {
+        return { width: maxWidth, height: maxHeight };
+    }
+    // Allow upscaling to fill the target box (no stretch, keep aspect ratio).
+    const scale = Math.min(maxWidth / imgWidth, maxHeight / imgHeight);
+    return {
+        width: Math.max(1, Math.round(imgWidth * scale)),
+        height: Math.max(1, Math.round(imgHeight * scale))
+    };
+}
+
+async function appendPreviewImagesToDocx(docxPath, imagePaths, opts = {}) {
     const {
         markerText = DOCX_PREVIEW_MARKER_TEXT,
         imagesPerRow = 3,
-        imageWidthPx = 210,
-        imageHeightPx = 140,
+        maxImageWidthPx = 240,
+        maxImageHeightPx = 170,
         tableIndentTwips = 2200,
         rightIndentTwips = 80
     } = opts;
@@ -999,7 +1034,9 @@ function appendPreviewImagesToDocx(docxPath, imagePaths, opts = {}) {
     if (!docFile) throw new Error('document.xml غير موجود داخل التقرير.');
 
     let docXml = docFile.asText();
+    // Backwards compatibility: remove old table-based layout + new paragraph-based layout.
     docXml = removeExistingPreviewImagesTable(docXml);
+    docXml = removeParagraphsContaining(docXml, 'name="PreviewImage"');
 
     let relsXml = zip.file(relsPath)?.asText();
     if (!relsXml) {
@@ -1010,104 +1047,87 @@ function appendPreviewImagesToDocx(docxPath, imagePaths, opts = {}) {
     let nextRel = (existingIds.length ? Math.max(...existingIds) : 0) + 1;
 
     const pxToEmu = (px) => Math.round(px * 9525);
-    const cx = pxToEmu(imageWidthPx);
-    const cy = pxToEmu(imageHeightPx);
 
     const rows = [];
-    const addedRels = [];
     for (let i = 0; i < imagePaths.length; i++) {
         const imagePath = imagePaths[i];
         const buf = fs.readFileSync(imagePath);
         const ext = (path.extname(imagePath) || '.png').toLowerCase();
         const imageName = `preview_${Date.now()}_${i}${ext}`;
         const relId = `rId${nextRel++}`;
-        addedRels.push({ relId, imageName });
 
         zip.file(`word/media/${imageName}`, buf);
         const relTag = `<Relationship Id="${relId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${imageName}"/>`;
         relsXml = relsXml.replace('</Relationships>', `${relTag}</Relationships>`);
 
-        rows.push({ relId, imageName });
+        let imgW = null;
+        let imgH = null;
+        try {
+            const img = await loadImage(buf);
+            imgW = img?.width;
+            imgH = img?.height;
+        } catch (_) {
+            // ignore dimension detection failures; will fall back to max box
+        }
+        const { width, height } = computeContainSize(imgW, imgH, maxImageWidthPx, maxImageHeightPx);
+        rows.push({ relId, imageName, cx: pxToEmu(width), cy: pxToEmu(height) });
     }
 
     zip.file(relsPath, relsXml);
 
-    const makeDrawing = (relId, docPrId) => `
-      <w:p>
-        <w:pPr>
-          <w:jc w:val="right"/>
-        </w:pPr>
-        <w:r>
-          <w:drawing>
-            <wp:inline distT="0" distB="0" distL="0" distR="0" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">
-              <wp:extent cx="${cx}" cy="${cy}"/>
-              <wp:docPr id="${docPrId}" name="PreviewImage"/>
-              <a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
-                <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
-                  <pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
-                    <pic:nvPicPr>
-                      <pic:cNvPr id="0" name="preview"/>
-                      <pic:cNvPicPr/>
-                    </pic:nvPicPr>
-                    <pic:blipFill>
-                      <a:blip r:embed="${relId}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>
-                      <a:stretch><a:fillRect/></a:stretch>
-                    </pic:blipFill>
-                    <pic:spPr>
-                      <a:xfrm>
-                        <a:off x="0" y="0"/>
-                        <a:ext cx="${cx}" cy="${cy}"/>
-                      </a:xfrm>
-                      <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
-                    </pic:spPr>
-                  </pic:pic>
-                </a:graphicData>
-              </a:graphic>
-            </wp:inline>
-          </w:drawing>
-        </w:r>
-      </w:p>
+    const makeInlineDrawingRun = (relId, docPrId, cx, cy) => `
+      <w:r>
+        <w:drawing>
+          <wp:inline distT="0" distB="0" distL="0" distR="0" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">
+            <wp:extent cx="${cx}" cy="${cy}"/>
+            <wp:docPr id="${docPrId}" name="PreviewImage"/>
+            <a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+              <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                <pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                  <pic:nvPicPr>
+                    <pic:cNvPr id="0" name="preview"/>
+                    <pic:cNvPicPr/>
+                  </pic:nvPicPr>
+                  <pic:blipFill>
+                    <a:blip r:embed="${relId}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>
+                    <a:stretch><a:fillRect/></a:stretch>
+                  </pic:blipFill>
+                  <pic:spPr>
+                    <a:xfrm>
+                      <a:off x="0" y="0"/>
+                      <a:ext cx="${cx}" cy="${cy}"/>
+                    </a:xfrm>
+                    <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+                  </pic:spPr>
+                </pic:pic>
+              </a:graphicData>
+            </a:graphic>
+          </wp:inline>
+        </w:drawing>
+      </w:r>
     `;
 
-    const makeCell = (drawingXml) => `
-      <w:tc>
-        <w:tcPr>
-          <w:tcW w:w="0" w:type="auto"/>
-          <w:vAlign w:val="center"/>
-        </w:tcPr>
-        ${drawingXml}
-      </w:tc>
-    `;
-
-    const tableRows = [];
-    const docPrStart = Date.now() % 100000;
-    for (let i = 0; i < rows.length; i += imagesPerRow) {
-        const chunk = rows.slice(i, i + imagesPerRow);
-        const cells = chunk.map((img, idx) => makeCell(makeDrawing(img.relId, docPrStart + i + idx))).join('');
-        const paddingCells = Array.from({ length: Math.max(0, imagesPerRow - chunk.length) }, () => makeCell('<w:p/>')).join('');
-        tableRows.push(`<w:tr>${cells}${paddingCells}</w:tr>`);
-    }
-
-    const galleryXml = `
+    const makeRowParagraph = (runsXml) => `
       <w:p>
         <w:pPr>
           <w:ind w:left="${tableIndentTwips}" w:right="${rightIndentTwips}"/>
-          <w:spacing w:before="250" w:after="150"/>
           <w:jc w:val="right"/>
+          <w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/>
         </w:pPr>
+        ${runsXml}
       </w:p>
-      <w:tbl>
-        <w:tblPr>
-          <w:tblW w:w="0" w:type="auto"/>
-          <w:jc w:val="right"/>
-          <w:tblInd w:w="${tableIndentTwips}" w:type="dxa"/>
-          <w:tblCaption w:val="${PREVIEW_IMAGES_TABLE_CAPTION}"/>
-        </w:tblPr>
-        <w:tblGrid>
-          ${Array.from({ length: imagesPerRow }, () => '<w:gridCol w:w="0"/>').join('')}
-        </w:tblGrid>
-        ${tableRows.join('')}
-      </w:tbl>
+    `;
+
+    const docPrStart = Date.now() % 100000;
+    const paragraphsXml = [];
+    for (let i = 0; i < rows.length; i += imagesPerRow) {
+        const chunk = rows.slice(i, i + imagesPerRow);
+        const runs = chunk.map((img, idx) => makeInlineDrawingRun(img.relId, docPrStart + i + idx, img.cx, img.cy)).join('');
+        paragraphsXml.push(makeRowParagraph(runs));
+    }
+
+    const galleryXml = `
+      ${paragraphsXml.join('')}
     `;
 
     let insertionPoint = -1;
@@ -1230,12 +1250,296 @@ async function appendPreviewImages(basePath, folderName) {
             continue;
         }
         const docxPath = path.join(targetDir, docxFile);
-        appendPreviewImagesToDocx(docxPath, images);
+        await appendPreviewImagesToDocx(docxPath, images);
         previewProcessed += 1;
         previewImagesAppended += images.length;
     }
 
     return { root, previewRoot, targetDir, previewProcessed, previewSkipped, previewImagesAppended };
+}
+
+async function ensureElectronReady() {
+    if (!electronApp) throw new Error('Electron app is not available for PDF conversion.');
+    if (electronApp.isReady()) return;
+    await new Promise((resolve) => electronApp.once('ready', resolve));
+}
+
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function isPngMostlyWhite(pngBuffer) {
+    try {
+        const img = await loadImage(pngBuffer);
+        const sampleW = 48;
+        const sampleH = 48;
+        const canvas = createCanvas(sampleW, sampleH);
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, sampleW, sampleH);
+        ctx.drawImage(img, 0, 0, sampleW, sampleH);
+        const data = ctx.getImageData(0, 0, sampleW, sampleH).data;
+
+        // Ignore edges to avoid counting PDF page borders/scrollbars.
+        const margin = 6;
+        let nonWhite = 0;
+        let checked = 0;
+        for (let y = margin; y < sampleH - margin; y += 1) {
+            for (let x = margin; x < sampleW - margin; x += 1) {
+                const idx = (y * sampleW + x) * 4;
+                const r = data[idx];
+                const g = data[idx + 1];
+                const b = data[idx + 2];
+                const a = data[idx + 3];
+                checked += 1;
+                if (a > 10 && (r < 245 || g < 245 || b < 245)) nonWhite += 1;
+            }
+        }
+        // If we have enough non-white pixels in the center area, assume content rendered.
+        return nonWhite / Math.max(1, checked) < 0.01;
+    } catch (_) {
+        return false;
+    }
+}
+
+async function capturePdfPngWithRetry(win, rect, attempts = 6) {
+    let last = null;
+    for (let i = 0; i < attempts; i += 1) {
+        const cap = rect
+            ? await win.webContents.capturePage({ x: rect.x, y: rect.y, width: rect.width, height: rect.height })
+            : await win.webContents.capturePage();
+        const png = cap.toPNG();
+        last = png;
+        const mostlyWhite = await isPngMostlyWhite(png);
+        if (!mostlyWhite) return png;
+        await sleep(450);
+    }
+    return last;
+}
+
+async function renderPdfFirstPageToPng(pdfPath, opts = {}) {
+    const {
+        width = 1200,
+        height = 1600,
+        zoom = 140
+    } = opts;
+
+    if (!BrowserWindow) throw new Error('BrowserWindow is not available for PDF conversion.');
+    await ensureElectronReady();
+
+    const fileUrl = pathToFileURL(pdfPath).toString();
+    const src = `${fileUrl}#page=1&zoom=${zoom}&toolbar=0&navpanes=0&scrollbar=0`;
+    const html = `
+      <!doctype html>
+      <html>
+      <head>
+        <meta charset="utf-8"/>
+        <style>
+          html, body { margin: 0; padding: 0; background: white; width: 100%; height: 100%; overflow: hidden; }
+          #pdf { width: 100%; height: 100%; border: 0; }
+        </style>
+      </head>
+      <body>
+        <iframe id="pdf" src="${src}"></iframe>
+      </body>
+      </html>
+    `;
+    const url = `data:text/html;charset=UTF-8,${encodeURIComponent(html)}`;
+
+    const win = new BrowserWindow({
+        show: false,
+        width,
+        height,
+        webPreferences: {
+            sandbox: false,
+            contextIsolation: true,
+            nodeIntegration: false,
+            // Needed when using data: wrapper + local file PDF
+            webSecurity: false,
+            plugins: true
+        }
+    });
+
+    try {
+        await win.loadURL(url);
+        // Give Chromium time to render the PDF viewer inside the iframe.
+        await sleep(600);
+
+        const rect = await win.webContents.executeJavaScript(`
+          (function(){
+            const el = document.getElementById('pdf');
+            if (!el) return null;
+            const r = el.getBoundingClientRect();
+            return { x: r.x, y: r.y, width: r.width, height: r.height, dpr: window.devicePixelRatio || 1 };
+          })();
+        `);
+
+        const png = await capturePdfPngWithRetry(win, rect, 7);
+        const stillWhite = await isPngMostlyWhite(png);
+        if (!stillWhite) return png;
+
+        // Fallback: load the PDF directly (uses Chromium's built-in PDF viewer page).
+        await win.loadURL(src);
+        await sleep(900);
+        const png2 = await capturePdfPngWithRetry(win, null, 7);
+        return png2;
+    } finally {
+        try { win.destroy(); } catch (_) { /* ignore */ }
+    }
+}
+
+async function appendRegistrationCertificateToDocx(docxPath, pdfPath) {
+    if (!fs.existsSync(pdfPath)) return { appendedPages: 0 };
+    const png = await renderPdfFirstPageToPng(pdfPath);
+
+    const docXmlPath = 'word/document.xml';
+    const relsPath = 'word/_rels/document.xml.rels';
+    const content = fs.readFileSync(docxPath);
+    const zip = new PizZip(content);
+    const docFile = zip.file(docXmlPath);
+    if (!docFile) throw new Error('document.xml غير موجود داخل التقرير.');
+
+    let docXml = docFile.asText();
+    docXml = removeParagraphsContaining(docXml, 'name="RegistrationCertificateImage"');
+
+    let relsXml = zip.file(relsPath)?.asText();
+    if (!relsXml) {
+        relsXml = '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
+    }
+
+    const existingIds = Array.from(relsXml.matchAll(/Id="rId(\d+)"/g)).map((m) => Number(m[1]));
+    const nextId = (existingIds.length ? Math.max(...existingIds) : 0) + 1;
+    const relId = `rId${nextId}`;
+    const imageName = `reg_cert_${Date.now()}_${Math.floor(Math.random() * 100000)}.png`;
+
+    const relTag = `<Relationship Id="${relId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${imageName}"/>`;
+    relsXml = relsXml.replace('</Relationships>', `${relTag}</Relationships>`);
+    zip.file(relsPath, relsXml);
+    zip.file(`word/media/${imageName}`, png);
+
+    let imgW = 1200;
+    let imgH = 1600;
+    try {
+        const img = await loadImage(png);
+        if (img?.width) imgW = img.width;
+        if (img?.height) imgH = img.height;
+    } catch (_) { /* ignore */ }
+
+    const maxWidthPx = 620;
+    const maxHeightPx = 900;
+    const { width, height } = computeContainSize(imgW, imgH, maxWidthPx, maxHeightPx);
+    const pxToEmu = (px) => Math.round(px * 9525);
+    const cx = pxToEmu(width);
+    const cy = pxToEmu(height);
+
+    const leftIndentTwips = 2200;
+    const rightIndentTwips = 80;
+    const drawingXml = `
+      <w:p>
+        <w:pPr>
+          <w:ind w:left="${leftIndentTwips}" w:right="${rightIndentTwips}"/>
+          <w:spacing w:before="250" w:after="250"/>
+          <w:jc w="right"/>
+        </w:pPr>
+        <w:r>
+          <w:drawing>
+            <wp:inline distT="0" distB="0" distL="0" distR="0" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">
+              <wp:extent cx="${cx}" cy="${cy}"/>
+              <wp:docPr id="${nextId}" name="RegistrationCertificateImage"/>
+              <a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+                <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                  <pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">
+                    <pic:nvPicPr>
+                      <pic:cNvPr id="0" name="${imageName}"/>
+                      <pic:cNvPicPr/>
+                    </pic:nvPicPr>
+                    <pic:blipFill>
+                      <a:blip r:embed="${relId}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>
+                      <a:stretch><a:fillRect/></a:stretch>
+                    </pic:blipFill>
+                    <pic:spPr>
+                      <a:xfrm>
+                        <a:off x="0" y="0"/>
+                        <a:ext cx="${cx}" cy="${cy}"/>
+                      </a:xfrm>
+                      <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+                    </pic:spPr>
+                  </pic:pic>
+                </a:graphicData>
+              </a:graphic>
+            </wp:inline>
+          </w:drawing>
+        </w:r>
+      </w:p>
+    `;
+
+    let insertionPoint = -1;
+    const markerText = DOCX_REG_CERT_MARKER_TEXT;
+    if (markerText) {
+        const paragraphs = docXml.match(/<w:p[\s\S]*?<\/w:p>/g) || [];
+        let lastMatchStart = -1;
+        let lastMatchLength = 0;
+        for (const p of paragraphs) {
+            const plain = p.replace(/<[^>]+>/g, '');
+            if (plain.includes(markerText)) {
+                const paraStart = docXml.indexOf(p, lastMatchStart + 1);
+                if (paraStart !== -1) {
+                    lastMatchStart = paraStart;
+                    lastMatchLength = p.length;
+                }
+            }
+        }
+        if (lastMatchStart !== -1) insertionPoint = lastMatchStart + lastMatchLength;
+    }
+    if (insertionPoint === -1) {
+        insertionPoint = docXml.includes('</w:body>') ? docXml.lastIndexOf('</w:body>') : docXml.length;
+    }
+
+    docXml = `${docXml.slice(0, insertionPoint)}${drawingXml}${docXml.slice(insertionPoint)}`;
+    zip.file(docXmlPath, docXml);
+    const updated = zip.generate({ type: 'nodebuffer' });
+    fs.writeFileSync(docxPath, updated);
+    return { appendedPages: 1 };
+}
+
+async function appendRegistrationCertificates(basePath, folderName) {
+    const root = path.join(basePath, folderName);
+    const targetDir = path.join(root, MAIN_FOLDERS[2]);
+    const certDir = path.join(targetDir, REG_CERT_FOLDER_NAME);
+
+    if (!fs.existsSync(targetDir)) throw new Error(`لم يتم العثور على مجلد ملفات DOCX: ${targetDir}`);
+    if (!fs.existsSync(certDir)) throw new Error(`لم يتم العثور على مجلد شهادات التسجيل: ${certDir}`);
+
+    const docxFiles = (await fs.promises.readdir(targetDir))
+        .filter((f) => f.toLowerCase().endsWith('.docx'));
+    const pdfFiles = (await fs.promises.readdir(certDir))
+        .filter((f) => f.toLowerCase().endsWith('.pdf'));
+
+    const pdfMap = new Map();
+    for (const pdf of pdfFiles) {
+        const key = normalizeKey(path.basename(pdf, '.pdf'));
+        if (!key) continue;
+        pdfMap.set(key, path.join(certDir, pdf));
+    }
+
+    let certProcessed = 0;
+    let certSkipped = 0;
+    let certPagesAppended = 0;
+
+    for (const docxFile of docxFiles) {
+        const key = normalizeKey(path.basename(docxFile, '.docx'));
+        const pdfPath = pdfMap.get(key);
+        if (!pdfPath) {
+            certSkipped += 1;
+            continue;
+        }
+        const docxPath = path.join(targetDir, docxFile);
+        const { appendedPages } = await appendRegistrationCertificateToDocx(docxPath, pdfPath);
+        certProcessed += 1;
+        certPagesAppended += appendedPages;
+    }
+
+    return { root, targetDir, certDir, certProcessed, certSkipped, certPagesAppended };
 }
 
 async function createFoldersOnly(basePath, folderName, dataExcelPath) {
@@ -1426,6 +1730,20 @@ const valuationHandlers = {
         } catch (error) {
             console.error('[MAIN] valuation append preview images failed:', error);
             return { ok: false, error: error.message || 'Failed to append preview images to docx files.' };
+        }
+    },
+
+    async handleAppendRegistrationCertificates(event, payload = {}) {
+        try {
+            const { basePath, folderName } = payload;
+            const result = await appendRegistrationCertificates(basePath, folderName);
+            return {
+                ok: true,
+                ...result
+            };
+        } catch (error) {
+            console.error('[MAIN] valuation append registration certificates failed:', error);
+            return { ok: false, error: error.message || 'Failed to append registration certificates to docx files.' };
         }
     }
 };

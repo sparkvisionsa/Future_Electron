@@ -145,5 +145,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
     updateValuationCalc: (payload) => safeInvoke('valuation-update-calc', payload),
     createValuationDocx: (payload) => safeInvoke('valuation-create-docx', payload),
     generateValuationValueCalcs: (payload) => safeInvoke('valuation-value-calcs', payload),
-    appendValuationPreviewImages: (payload) => safeInvoke('valuation-append-preview-images', payload)
+    appendValuationPreviewImages: (payload) => safeInvoke('valuation-append-preview-images', payload),
+    appendValuationRegistrationCertificates: (payload) => safeInvoke('valuation-append-registration-certificates', payload)
 });

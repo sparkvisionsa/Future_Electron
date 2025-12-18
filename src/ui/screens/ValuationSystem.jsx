@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { FolderPlus, FileSpreadsheet, RefreshCw, CheckCircle2, AlertTriangle, Loader2, Info, Save, FolderOpen, ListTree, FileText, Calculator, Images } from 'lucide-react';
+import { FolderPlus, FileSpreadsheet, RefreshCw, CheckCircle2, AlertTriangle, Loader2, Info, Save, FolderOpen, ListTree, FileText, Calculator, Images, BadgeCheck } from 'lucide-react';
 
 const ValuationSystem = () => {
     const [basePath, setBasePath] = useState('');
@@ -11,6 +11,7 @@ const ValuationSystem = () => {
     const [loadingDocx, setLoadingDocx] = useState(false);
     const [loadingValueCalcs, setLoadingValueCalcs] = useState(false);
     const [loadingPreviewImages, setLoadingPreviewImages] = useState(false);
+    const [loadingRegCerts, setLoadingRegCerts] = useState(false);
     const [result, setResult] = useState(null);
     const [error, setError] = useState('');
 
@@ -194,6 +195,33 @@ const ValuationSystem = () => {
         }
     };
 
+    const handleAppendRegistrationCertificates = async () => {
+        setError('');
+        setResult(null);
+        if (!basePath || !folderName) {
+            setError('حدد مسار المجلد واسم المجلد أولاً.');
+            return;
+        }
+        if (!window?.electronAPI?.appendValuationRegistrationCertificates) {
+            setError('الميزة غير متوفرة في هذا الإصدار.');
+            return;
+        }
+        setLoadingRegCerts(true);
+        try {
+            const payload = { basePath, folderName };
+            const res = await window.electronAPI.appendValuationRegistrationCertificates(payload);
+            if (res?.ok) {
+                setResult(res);
+            } else {
+                setError(res?.error || 'تعذر إرفاق شهادات التسجيل داخل الملفات.');
+            }
+        } catch (err) {
+            setError(err?.message || 'تعذر إرفاق شهادات التسجيل داخل الملفات.');
+        } finally {
+            setLoadingRegCerts(false);
+        }
+    };
+
     return (
         <div className="space-y-6">
             <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-4 flex items-start gap-3">
@@ -325,6 +353,15 @@ const ValuationSystem = () => {
                 </button>
                 <button
                     type="button"
+                    onClick={handleAppendRegistrationCertificates}
+                    disabled={loadingRegCerts}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-teal-700 text-white text-sm font-semibold hover:bg-teal-800 disabled:opacity-50"
+                >
+                    {loadingRegCerts ? <Loader2 className="w-4 h-4 animate-spin" /> : <BadgeCheck className="w-4 h-4" />}
+                    إرفاق شهادات التسجيل (DOCX)
+                </button>
+                <button
+                    type="button"
                     onClick={resetForm}
                     className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-100 text-gray-800 text-sm font-semibold hover:bg-slate-200"
                 >
@@ -368,6 +405,9 @@ const ValuationSystem = () => {
                         )}
                         {typeof result.previewProcessed === 'number' && (
                             <p>تم إدراج صور المعاينة في: {result.previewProcessed} ملف (تخطي: {result.previewSkipped || 0})</p>
+                        )}
+                        {typeof result.certProcessed === 'number' && (
+                            <p>تم إدراج شهادات التسجيل في: {result.certProcessed} ملف (تخطي: {result.certSkipped || 0})</p>
                         )}
                         {result.imagesDir && (
                             <p>تم حفظ صور الحسابات في: <span className="font-mono break-all">{result.imagesDir}</span></p>
